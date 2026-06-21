@@ -167,46 +167,37 @@ func rebuildSet() func(full, triple string) bool {
 // publishedArtifacts returns the set of (engine, full, triple) already present
 // in the published manifest, so plan can skip them. The manifest location is
 // DZB_INDEX_URL (an http(s) URL or a local path), else derived from
-// GITHUB_REPOSITORY. A missing manifest (first ever run) yields an empty set.
+// GITHUB_REPOSITORY. The current manifest is index.yaml, but a legacy index.json
+// is tried as a fallback so a format migration does not look like "nothing
+// published" (which would rebuild everything and break checksums). A missing
+// manifest (first ever run) yields an empty set.
 func publishedArtifacts(engine string) (map[string]bool, error) {
 	set := map[string]bool{}
 
-	loc := os.Getenv("DZB_INDEX_URL")
-	if loc == "" {
-		if repo := os.Getenv("GITHUB_REPOSITORY"); repo != "" {
-			loc = fmt.Sprintf("https://github.com/%s/releases/download/%s/index.yaml", repo, engine)
-		}
+	var locs []string
+	if loc := os.Getenv("DZB_INDEX_URL"); loc != "" {
+		locs = []string{loc}
+	} else if repo := os.Getenv("GITHUB_REPOSITORY"); repo != "" {
+		base := fmt.Sprintf("https://github.com/%s/releases/download/%s", repo, engine)
+		locs = []string{base + "/index.yaml", base + "/index.json"}
 	}
-	if loc == "" {
+	if len(locs) == 0 {
 		return set, nil // no reference point: treat everything as new
 	}
 
 	var body []byte
-	if strings.HasPrefix(loc, "http") {
-		resp, err := http.Get(loc)
-		if err != nil {
-			return nil, fmt.Errorf("fetching published manifest %s: %w", loc, err)
-		}
-		defer resp.Body.Close()
-		if resp.StatusCode == http.StatusNotFound {
-			return set, nil // not published yet
-		}
-		if resp.StatusCode != http.StatusOK {
-			return nil, fmt.Errorf("fetching published manifest %s: %s", loc, resp.Status)
-		}
-		body, err = io.ReadAll(resp.Body)
+	for _, loc := range locs {
+		b, found, err := fetchIndex(loc)
 		if err != nil {
 			return nil, err
 		}
-	} else {
-		data, err := os.ReadFile(loc)
-		if err != nil {
-			if os.IsNotExist(err) {
-				return set, nil
-			}
-			return nil, err
+		if found {
+			body = b
+			break
 		}
-		body = data
+	}
+	if body == nil {
+		return set, nil // not published yet (in any format)
 	}
 
 	var idx struct {
@@ -225,4 +216,35 @@ func publishedArtifacts(engine string) (map[string]bool, error) {
 		}
 	}
 	return set, nil
+}
+
+// fetchIndex reads a manifest from an http(s) URL or a local path. found is
+// false (with nil error) when the manifest simply isn't there (404 / missing).
+func fetchIndex(loc string) (body []byte, found bool, err error) {
+	if strings.HasPrefix(loc, "http") {
+		resp, err := http.Get(loc)
+		if err != nil {
+			return nil, false, fmt.Errorf("fetching published manifest %s: %w", loc, err)
+		}
+		defer resp.Body.Close()
+		if resp.StatusCode == http.StatusNotFound {
+			return nil, false, nil
+		}
+		if resp.StatusCode != http.StatusOK {
+			return nil, false, fmt.Errorf("fetching published manifest %s: %s", loc, resp.Status)
+		}
+		b, err := io.ReadAll(resp.Body)
+		if err != nil {
+			return nil, false, err
+		}
+		return b, true, nil
+	}
+	b, err := os.ReadFile(loc)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, false, nil
+		}
+		return nil, false, err
+	}
+	return b, true, nil
 }
