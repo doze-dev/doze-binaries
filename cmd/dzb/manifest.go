@@ -3,43 +3,45 @@ package main
 import (
 	"crypto/sha256"
 	"encoding/hex"
-	"encoding/json"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
 	"regexp"
 	"strings"
+
+	"gopkg.in/yaml.v3"
 )
 
 // artifact is one downloadable, checksummed archive.
 type artifact struct {
-	URL    string `json:"url"`
-	SHA256 string `json:"sha256"`
+	URL    string `yaml:"url"`
+	SHA256 string `yaml:"sha256"`
 }
 
 // engineManifest mirrors doze's {versions, artifacts} shape for one engine: a
 // major resolves to a full version, then a triple to an artifact.
 type engineManifest struct {
-	Versions  map[string]string              `json:"versions"`
-	Artifacts map[string]map[string]artifact `json:"artifacts"`
+	Versions  map[string]string              `yaml:"versions"`
+	Artifacts map[string]map[string]artifact `yaml:"artifacts"`
 }
 
 type manifest struct {
-	Engines map[string]*engineManifest `json:"engines"`
+	Engines map[string]*engineManifest `yaml:"engines"`
 }
 
 // archiveName captures engine, full version, and triple. "postgresql" is
 // normalised to "postgres" to match doze's engine naming.
 var archiveName = regexp.MustCompile(`^(postgresql|valkey|kvrocks|ferretdb)-(\d+\.\d+\.\d+)-(.+)\.tar\.gz$`)
 
-// runManifest builds the multi-engine index.json. It is CUMULATIVE: if an
+// runManifest builds the multi-engine index.yaml. It is CUMULATIVE: if an
 // existing manifest is given, newly built archives are merged into it and no
 // previously published entry is ever dropped or overwritten — so old versions
-// stay resolvable forever and lockfiles keep working.
+// stay resolvable forever and lockfiles keep working. The existing manifest may
+// be YAML or legacy JSON (JSON is a YAML subset, so the same parser reads both).
 func runManifest(args []string) error {
 	if len(args) < 2 || len(args) > 3 {
-		return fmt.Errorf("usage: dzb manifest <dist_dir> <download_base_url> [existing_index.json]")
+		return fmt.Errorf("usage: dzb manifest <dist_dir> <download_base_url> [existing_index]")
 	}
 	dist, base := args[0], strings.TrimRight(args[1], "/")
 	forced := rebuildSet()
@@ -47,7 +49,7 @@ func runManifest(args []string) error {
 	man := manifest{Engines: map[string]*engineManifest{}}
 	if len(args) == 3 {
 		if data, err := os.ReadFile(args[2]); err == nil {
-			if err := json.Unmarshal(data, &man); err != nil {
+			if err := yaml.Unmarshal(data, &man); err != nil {
 				return fmt.Errorf("parsing existing manifest %s: %w", args[2], err)
 			}
 			if man.Engines == nil {
@@ -108,11 +110,11 @@ func runManifest(args []string) error {
 		}
 	}
 
-	out, err := json.MarshalIndent(man, "", "  ")
+	out, err := yaml.Marshal(man)
 	if err != nil {
 		return err
 	}
-	fmt.Println(string(out))
+	fmt.Print(string(out))
 	return nil
 }
 

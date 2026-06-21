@@ -174,7 +174,7 @@ func publishedArtifacts(engine string) (map[string]bool, error) {
 	loc := os.Getenv("DZB_INDEX_URL")
 	if loc == "" {
 		if repo := os.Getenv("GITHUB_REPOSITORY"); repo != "" {
-			loc = fmt.Sprintf("https://github.com/%s/releases/download/%s/index.json", repo, engine)
+			loc = fmt.Sprintf("https://github.com/%s/releases/download/%s/index.yaml", repo, engine)
 		}
 	}
 	if loc == "" {
@@ -211,10 +211,10 @@ func publishedArtifacts(engine string) (map[string]bool, error) {
 
 	var idx struct {
 		Engines map[string]struct {
-			Artifacts map[string]map[string]json.RawMessage `json:"artifacts"`
-		} `json:"engines"`
+			Artifacts map[string]map[string]yaml.Node `yaml:"artifacts"`
+		} `yaml:"engines"`
 	}
-	if err := json.Unmarshal(body, &idx); err != nil {
+	if err := yaml.Unmarshal(body, &idx); err != nil {
 		return nil, fmt.Errorf("parsing published manifest: %w", err)
 	}
 	for engine, e := range idx.Engines {

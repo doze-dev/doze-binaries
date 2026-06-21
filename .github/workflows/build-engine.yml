@@ -80,9 +80,10 @@ jobs:
 
   publish:
     needs: [plan, build]
-    # Run even if some build jobs failed, so the binaries that did build still
-    # publish — the release is append-only, and later runs add the rest.
-    if: ${{ !cancelled() && needs.plan.outputs.has_work == 'true' }}
+    # Run even if some builds failed (publish what did build — the release is
+    # append-only) and even with no new builds, so a manifest refresh (e.g. a
+    # format change) still reconciles index.yaml without a rebuild.
+    if: ${{ !cancelled() }}
     runs-on: ubuntu-latest
     env:
       GH_TOKEN: ${{ github.token }}
@@ -102,17 +103,21 @@ jobs:
         run: |
           gh release create ${{ inputs.engine }} \
             --title "doze ${{ inputs.engine }} binaries" \
-            --notes "Prebuilt ${{ inputs.engine }} binaries for doze (macOS + Linux). Append-only mirror; see index.json." \
+            --notes "Prebuilt ${{ inputs.engine }} binaries for doze (macOS + Linux). Append-only mirror; see index.yaml." \
             2>/dev/null || true
       - name: Assemble dist + cumulative manifest
         run: |
           mkdir -p dist
           cp staging/* dist/ 2>/dev/null || true   # staging may be empty if all builds failed
           # Merge into this engine's already-published manifest (never drop entries).
-          gh release download ${{ inputs.engine }} --pattern index.json --output existing.json 2>/dev/null || true
+          # Prefer the YAML manifest; fall back to legacy index.json (one-time migration).
+          gh release download ${{ inputs.engine }} --pattern index.yaml --output existing.idx 2>/dev/null \
+            || gh release download ${{ inputs.engine }} --pattern index.json --output existing.idx 2>/dev/null || true
           go run ./cmd/dzb manifest dist \
             "https://github.com/${{ github.repository }}/releases/download/${{ inputs.engine }}" \
-            existing.json > dist/index.json
+            existing.idx > dist/index.yaml
           ls -l dist
-      - name: Publish (append new archives; refresh index.json only)
+      - name: Publish (append new archives; refresh index.yaml)
         run: gh release upload ${{ inputs.engine }} dist/* --clobber
+      - name: Remove the legacy index.json once index.yaml is published
+        run: gh release delete-asset ${{ inputs.engine }} index.json --yes 2>/dev/null || true
