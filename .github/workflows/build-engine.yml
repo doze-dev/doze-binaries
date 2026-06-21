@@ -10,6 +10,13 @@ on:
       engine:
         required: true
         type: string
+      rebuild:
+        description: >-
+          Comma-separated artifacts to rebuild even though already published
+          (e.g. "16.14.0" for all triples, "16.14.0:aarch64-apple-darwin" for one).
+        required: false
+        type: string
+        default: ""
 
 permissions:
   contents: write
@@ -18,6 +25,8 @@ permissions:
 # taps (aws/tap, azure/bicep) that our builds never use.
 env:
   HOMEBREW_NO_REQUIRE_TAP_TRUST: "1"
+  # Honoured by `dzb plan` (don't skip) and `dzb manifest` (overwrite). Empty = off.
+  DZB_REBUILD: ${{ inputs.rebuild }}
 
 jobs:
   plan:
@@ -82,8 +91,11 @@ jobs:
       - uses: actions/setup-go@v6
         with:
           go-version: "stable"
+      # Only this engine's artifacts. All engines share one workflow run, so an
+      # unfiltered download would pull every engine's archives into this release.
       - uses: actions/download-artifact@v8
         with:
+          pattern: ${{ inputs.engine }}-*
           path: staging
           merge-multiple: true
       - name: Ensure the ${{ inputs.engine }} release exists

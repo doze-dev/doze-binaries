@@ -108,12 +108,13 @@ func runPlan(args []string) error {
 		if err != nil {
 			return err
 		}
+		forced := rebuildSet()
 		rule := engineRules[engine]
 		for _, v := range spec.Versions {
 			full := rule.archiveVersion(v)
 			for _, t := range triples {
-				if published[key(engine, full, t)] {
-					continue // already built and frozen
+				if published[key(engine, full, t)] && !forced(full, t) {
+					continue // already built and frozen (DZB_REBUILD overrides)
 				}
 				include = append(include, matrixItem{
 					Engine: engine, Version: full, Ref: rule.ref(v),
@@ -134,6 +135,34 @@ func runPlan(args []string) error {
 }
 
 func key(engine, full, triple string) string { return engine + "|" + full + "|" + triple }
+
+// rebuildSet parses DZB_REBUILD — a comma-separated list of artifacts to rebuild
+// even though they are already published (for fixing a bad build). Each token is
+// a full version ("16.14.0", matching every triple) or "full:triple"
+// ("16.14.0:aarch64-apple-darwin", just that one). forced reports whether a given
+// (full, triple) should be rebuilt/overwritten.
+func rebuildSet() func(full, triple string) bool {
+	raw := strings.TrimSpace(os.Getenv("DZB_REBUILD"))
+	if raw == "" {
+		return func(string, string) bool { return false }
+	}
+	fulls := map[string]bool{}
+	pairs := map[string]bool{}
+	for _, tok := range strings.Split(raw, ",") {
+		tok = strings.TrimSpace(tok)
+		if tok == "" {
+			continue
+		}
+		if full, triple, ok := strings.Cut(tok, ":"); ok {
+			pairs[full+"|"+triple] = true
+		} else {
+			fulls[tok] = true
+		}
+	}
+	return func(full, triple string) bool {
+		return fulls[full] || pairs[full+"|"+triple]
+	}
+}
 
 // publishedArtifacts returns the set of (engine, full, triple) already present
 // in the published manifest, so plan can skip them. The manifest location is

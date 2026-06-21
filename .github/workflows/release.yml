@@ -7,9 +7,17 @@ name: release
 
 on:
   workflow_dispatch:
+    inputs:
+      rebuild:
+        description: >-
+          Recreate already-published artifacts (normally skipped). Comma-separated:
+          "16.14.0" rebuilds every triple of that version, "16.14.0:aarch64-apple-darwin"
+          just one. Applies to whichever engine(s) own those versions.
+        required: false
+        default: ""
   push:
     branches: [main]
-    paths: [versions.yaml, recipes/**, scripts/**, cmd/**]
+    paths: [versions.yaml, recipes/**, scripts/**, cmd/**, .github/workflows/**]
 
 permissions:
   contents: write
@@ -23,3 +31,4 @@ jobs:
     uses: ./.github/workflows/build-engine.yml
     with:
       engine: ${{ matrix.engine }}
+      rebuild: ${{ inputs.rebuild }}

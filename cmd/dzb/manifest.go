@@ -42,6 +42,7 @@ func runManifest(args []string) error {
 		return fmt.Errorf("usage: dzb manifest <dist_dir> <download_base_url> [existing_index.json]")
 	}
 	dist, base := args[0], strings.TrimRight(args[1], "/")
+	forced := rebuildSet()
 
 	man := manifest{Engines: map[string]*engineManifest{}}
 	if len(args) == 3 {
@@ -83,8 +84,10 @@ func runManifest(args []string) error {
 		if em.Artifacts[full] == nil {
 			em.Artifacts[full] = map[string]artifact{}
 		}
-		// Published artifacts are immutable: never overwrite an existing entry.
-		if _, exists := em.Artifacts[full][triple]; exists {
+		// Published artifacts are immutable: never overwrite an existing entry —
+		// unless it is explicitly listed in DZB_REBUILD (recreating a bad build),
+		// in which case we recompute its checksum from the freshly built archive.
+		if _, exists := em.Artifacts[full][triple]; exists && !forced(full, triple) {
 			continue
 		}
 		sum, err := sha256File(filepath.Join(dist, e.Name()))
