@@ -27,7 +27,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        engine: [postgres, valkey, kvrocks, ferretdb]
+        engine: [postgres, valkey, kvrocks, ferretdb, documentdb]
     uses: ./.github/workflows/build-engine.yml
     with:
       engine: ${{ matrix.engine }}

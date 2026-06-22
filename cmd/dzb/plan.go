@@ -39,7 +39,7 @@ type engineRule struct {
 }
 
 // engineOrder fixes engine iteration order so the emitted matrix is deterministic.
-var engineOrder = []string{"postgres", "valkey", "kvrocks", "ferretdb"}
+var engineOrder = []string{"postgres", "valkey", "kvrocks", "ferretdb", "documentdb"}
 
 var engineRules = map[string]engineRule{
 	// Postgres: real two-part version (16.14) -> archive 16.14.0, branch REL_16_14.
@@ -58,6 +58,12 @@ var engineRules = map[string]engineRule{
 		ref:            func(v string) string { return "v" + v },
 	},
 	"ferretdb": {
+		archiveVersion: func(v string) string { return v },
+		ref:            func(v string) string { return "v" + v },
+	},
+	// DocumentDB tags are "vX.Y-Z" (e.g. v0.112-0); the version string keeps the
+	// dash and is used verbatim in the archive name.
+	"documentdb": {
 		archiveVersion: func(v string) string { return v },
 		ref:            func(v string) string { return "v" + v },
 	},

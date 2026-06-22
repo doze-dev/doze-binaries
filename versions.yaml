@@ -24,3 +24,8 @@ engines:
     versions: ["2.15.0"]
   ferretdb:
     versions: ["2.7.0"]
+  # documentdb = a self-contained Postgres 18 with Microsoft's DocumentDB
+  # extension chain compiled in; doze fronts it with FerretDB. Tags are vX.Y-Z.
+  # Postgres is pinned inside the recipe (not user-selected).
+  documentdb:
+    versions: ["0.112-0"]
