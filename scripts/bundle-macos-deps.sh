@@ -1,55 +1,106 @@
 #!/usr/bin/env bash
 # bundle-macos-deps.sh <install_dir> <brew_prefix>
 #
-# Make a macOS build relocatable: copy every Homebrew dylib the binaries link
-# into <install_dir>/lib, rewrite install names to @loader_path/../lib, and
-# ad-hoc codesign. Adapted from theseus-rs/postgresql-binaries (MIT).
+# Make a macOS build relocatable: copy every non-system dylib the binaries link
+# into <install_dir>/lib, rewrite every install name to @loader_path/../lib/<real
+# filename>, and ad-hoc codesign. Adapted from theseus-rs/postgresql-binaries (MIT).
 #
-# No pipefail: the `otool | grep <brew> | …` pipelines below legitimately match
-# nothing for binaries with no Homebrew dependencies, and that must not abort.
+# Why this is more than a one-liner: a dependency is *referenced* by the name its
+# producer advertised (often a major-version symlink, e.g. libicuuc.78.dylib) but
+# the file on disk is the fully-versioned real file (libicuuc.78.3.dylib). We must
+# copy the real file AND rewrite references to that real filename — not the symlink
+# name — or dyld looks for a file that isn't there. We must also follow *every*
+# non-system dependency, including @loader_path/@rpath-relative ones (ICU's
+# libicui18n → libicuuc → libicudata chain is wired this way), not just the ones
+# that happen to live under the Homebrew prefix.
+#
+# No pipefail: some otool pipelines below legitimately match nothing.
 set -eu
 
 INSTALL_DIR="$1"
-BREW_PREFIX="$2"
-[ -n "$INSTALL_DIR" ] && [ -n "$BREW_PREFIX" ] || { echo "usage: $0 <install_dir> <brew_prefix>"; exit 1; }
+BREW_PREFIX="${2:-}"
+[ -n "$INSTALL_DIR" ] || { echo "usage: $0 <install_dir> [brew_prefix]"; exit 1; }
+INSTALL_DIR="$(cd "$INSTALL_DIR" && pwd)"
 mkdir -p "$INSTALL_DIR/lib"
 
 realpath_of() { python3 -c "import os,sys;print(os.path.realpath(sys.argv[1]))" "$1"; }
 
-bundle_lib() {
-  local lib_path="$1" lib_name
-  lib_name="$(basename "$lib_path")"
-  [ -f "$INSTALL_DIR/lib/$lib_name" ] && return
-  echo "  bundling $lib_name"
-  cp "$lib_path" "$INSTALL_DIR/lib/"
-  chmod +w "$INSTALL_DIR/lib/$lib_name"
-  install_name_tool -id "@loader_path/../lib/$lib_name" "$INSTALL_DIR/lib/$lib_name"
-  otool -L "$INSTALL_DIR/lib/$lib_name" | grep "$BREW_PREFIX" | awk '{print $1}' | while read -r dep; do
-    local dep_real dep_name
-    dep_real="$(realpath_of "$dep")"; dep_name="$(basename "$dep")"
-    bundle_lib "$dep_real"
-    install_name_tool -change "$dep" "@loader_path/../lib/$dep_name" "$INSTALL_DIR/lib/$lib_name"
-  done
+is_system() {
+  case "$1" in
+    /usr/lib/*|/System/*) return 0 ;;
+    *) return 1 ;;
+  esac
 }
 
-fix_macho() {
-  local bin="$1"
-  file "$bin" | grep -q "Mach-O" || return 0
-  otool -L "$bin" | grep "$BREW_PREFIX" | awk '{print $1}' | while read -r dep; do
-    local dep_real dep_name
-    dep_real="$(realpath_of "$dep")"; dep_name="$(basename "$dep")"
-    bundle_lib "$dep_real"
-    install_name_tool -change "$dep" "@loader_path/../lib/$dep_name" "$bin"
-  done
-  otool -L "$bin" | grep "$INSTALL_DIR" | awk '{print $1}' | while read -r dep; do
-    install_name_tool -change "$dep" "@loader_path/../lib/$(basename "$dep")" "$bin"
-  done
+# Resolve a (possibly @loader_path/@rpath/relative) dependency reference, recorded
+# in a file living at <origin_dir>, to an absolute real path on disk.
+resolve_dep() {
+  local ref="$1" origin_dir="$2" cand=""
+  case "$ref" in
+    @loader_path/*|@executable_path/*)
+      cand="$origin_dir/${ref#@*/}" ;;
+    @rpath/*)
+      local base="${ref#@rpath/}" d
+      for d in "$origin_dir" "$origin_dir/../lib" "$INSTALL_DIR/lib" "$BREW_PREFIX/lib"; do
+        [ -n "$d" ] && [ -e "$d/$base" ] && { cand="$d/$base"; break; }
+      done
+      cand="${cand:-$BREW_PREFIX/lib/$base}" ;;
+    /*) cand="$ref" ;;
+    *)  cand="$origin_dir/$ref" ;;
+  esac
+  realpath_of "$cand"
 }
 
-find "$INSTALL_DIR/bin" -type f 2>/dev/null | while read -r b; do fix_macho "$b"; done
-find "$INSTALL_DIR/lib" -maxdepth 1 -name "*.dylib" 2>/dev/null | while read -r l; do
-  [ -L "$l" ] || fix_macho "$l"
-done
+# Rewrite every external/internal dependency of an already-placed Mach-O file to
+# @loader_path/../lib/<real filename>, bundling externals on the way. Progress is
+# routed to stderr so the function's stdout stays clean for callers that capture it.
+#
+# <origin> is the directory @loader_path/@rpath references should resolve against.
+# For a file we just copied out of Homebrew it must be the *original* source dir
+# (so ICU's @loader_path/libicudata still points at the real file to copy), not
+# the copy's new home — hence the explicit second argument.
+rewrite() {
+  local file="$1" origin="${2:-}" self dep resolved name
+  file "$file" | grep -q "Mach-O" || return 0
+  self="$(realpath_of "$file")"
+  [ -n "$origin" ] || origin="$(dirname "$file")"
+  # Skip the first otool line (the file header); the lib's own id is filtered by
+  # the self-comparison below.
+  while read -r dep; do
+    [ -n "$dep" ] || continue
+    is_system "$dep" && continue
+    resolved="$(resolve_dep "$dep" "$origin")"
+    [ "$resolved" = "$self" ] && continue          # the file's own id
+    case "$resolved" in
+      "$INSTALL_DIR"/*) name="$(basename "$resolved")" ;;   # already inside the tree
+      *) name="$(bundle "$resolved")" ;;                    # external → copy in
+    esac
+    [ -n "$name" ] || continue
+    install_name_tool -change "$dep" "@loader_path/../lib/$name" "$file" 2>/dev/null || true
+  done < <(otool -L "$file" | tail -n +2 | awk '{print $1}')
+}
+
+# Ensure an external dylib is copied into lib/ under its real filename, recurse
+# into its own dependencies, and echo the real filename for the caller's -change.
+bundle() {
+  local src="$1" real name
+  real="$(realpath_of "$src")"
+  name="$(basename "$real")"
+  if [ ! -f "$INSTALL_DIR/lib/$name" ]; then
+    echo "  bundling $name" >&2
+    cp "$real" "$INSTALL_DIR/lib/$name"
+    chmod +w "$INSTALL_DIR/lib/$name"
+    install_name_tool -id "@loader_path/../lib/$name" "$INSTALL_DIR/lib/$name" 2>/dev/null || true
+    # Resolve this copy's @loader_path refs against its ORIGINAL directory.
+    rewrite "$INSTALL_DIR/lib/$name" "$(dirname "$real")"
+  fi
+  echo "$name"
+}
+
+# Roots: every Mach-O in bin/ and every real (non-symlink) dylib already in lib/.
+while IFS= read -r b; do rewrite "$b"; done < <(find "$INSTALL_DIR/bin" -type f 2>/dev/null)
+while IFS= read -r l; do [ -L "$l" ] || rewrite "$l"; done \
+  < <(find "$INSTALL_DIR/lib" -maxdepth 1 -name "*.dylib" 2>/dev/null)
 
 # Ad-hoc sign everything we touched (required on Apple Silicon).
 find "$INSTALL_DIR/bin" "$INSTALL_DIR/lib" -type f -print0 2>/dev/null | while IFS= read -r -d '' f; do

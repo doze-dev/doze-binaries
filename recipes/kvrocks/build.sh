@@ -26,6 +26,8 @@ case "$triple" in
     ;;
   *darwin*)
     # autoconf/automake/libtool are needed to build kvrocks's vendored jemalloc.
+    # Keep `brew install` from cascading into unrelated upgrades (see postgres).
+    export HOMEBREW_NO_AUTO_UPDATE=1 HOMEBREW_NO_INSTALLED_DEPENDENTS_CHECK=1 HOMEBREW_NO_INSTALL_UPGRADE=1
     brew install cmake openssl@3 automake autoconf libtool || true
     ;;
 esac
@@ -42,3 +44,4 @@ case "$triple" in
 esac
 
 "$root/scripts/package.sh" "$prefix" "kvrocks-$version-$triple" "$out"
+"$root/scripts/smoke.sh" kvrocks "$out/kvrocks-$version-$triple.tar.gz" "$triple"

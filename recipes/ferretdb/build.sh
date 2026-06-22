@@ -32,3 +32,4 @@ GOFLAGS=-mod=mod go get "$pkg@$ref"
 GOFLAGS=-mod=mod go build -trimpath -o "$prefix/bin/ferretdb" "$pkg"
 
 "$root/scripts/package.sh" "$prefix" "ferretdb-$version-$triple" "$out"
+"$root/scripts/smoke.sh" ferretdb "$out/ferretdb-$version-$triple.tar.gz" "$triple"

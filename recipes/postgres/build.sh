@@ -27,7 +27,14 @@ case "$triple" in
       libxml2-dev uuid-dev
     ;;
   *darwin*)
-    brew install icu4c openssl@3 lz4 zstd libxml2 readline || true
+    # Don't let `brew install` drag in upgrades of unrelated installed formulae
+    # (that turns a dev-machine build into an hours-long cascade; on clean CI it
+    # is simply faster). We only need these specific kegs present.
+    export HOMEBREW_NO_AUTO_UPDATE=1 HOMEBREW_NO_INSTALLED_DEPENDENTS_CHECK=1 HOMEBREW_NO_INSTALL_UPGRADE=1
+    # pkg-config is how configure locates ICU (icu-uc/icu-i18n). It's preinstalled
+    # on CI's macOS runners but not necessarily on a dev machine — install it so a
+    # local build finds ICU instead of failing `--with-icu`.
+    brew install pkg-config icu4c openssl@3 lz4 zstd libxml2 readline || true
     bp="$(brew --prefix)"
     export PKG_CONFIG_PATH="$bp/opt/icu4c/lib/pkgconfig:$bp/opt/openssl@3/lib/pkgconfig:${PKG_CONFIG_PATH:-}"
     export CPPFLAGS="-I$bp/opt/icu4c/include -I$bp/opt/openssl@3/include -I$bp/opt/readline/include ${CPPFLAGS:-}"
@@ -64,3 +71,4 @@ case "$triple" in
 esac
 
 "$root/scripts/package.sh" "$prefix" "postgresql-$version-$triple" "$out"
+"$root/scripts/smoke.sh" postgres "$out/postgresql-$version-$triple.tar.gz" "$triple"

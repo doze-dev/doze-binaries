@@ -28,3 +28,4 @@ case "$triple" in
 esac
 
 "$root/scripts/package.sh" "$prefix" "valkey-$version-$triple" "$out"
+"$root/scripts/smoke.sh" valkey "$out/valkey-$version-$triple.tar.gz" "$triple"
