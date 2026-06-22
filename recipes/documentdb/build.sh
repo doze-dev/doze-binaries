@@ -96,7 +96,9 @@ mkdir -p "$src/postgis" && tar xzf "$src/postgis.tgz" -C "$src/postgis" --strip-
   [ -d deps ] && make -j"$ncpu" -C deps || true
   make -j"$ncpu" -C libpgcommon
   make -j"$ncpu" -C postgis && make -C postgis install
-  make -j"$ncpu" -C extensions/postgis && make -C extensions/postgis install )
+  # extensions/: generate postgis_extension_helper.sql and build ONLY the core
+  # postgis extension (override SUBDIRS so raster/topology are never added).
+  make -j"$ncpu" -C extensions SUBDIRS=postgis && make -C extensions SUBDIRS=postgis install )
 
 # ── 4. DocumentDB extensions (core + api + extended_rum) ─────────────────────
 git clone --depth 1 --branch "$ref" https://github.com/microsoft/documentdb.git "$src/documentdb"
