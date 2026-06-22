@@ -82,14 +82,21 @@ build_pgxs() { # <git-url> <ref> <subdir-make-args...>
 build_pgxs https://github.com/pgvector/pgvector.git v0.8.1
 build_pgxs https://github.com/citusdata/pg_cron.git v1.6.7
 
-# PostGIS: vector geometry only (documentdb's geo needs GEOS+PROJ, not raster/GDAL).
+# PostGIS: core geometry extension only. documentdb requires the `postgis`
+# extension (GEOS+PROJ), not postgis_raster/postgis_topology — those pull in
+# GDAL, which we deliberately don't ship. `make all` builds the extensions/
+# meta-dir (every variant, incl. raster/topology) and fails without GDAL, so we
+# build just the core subdirs and the single `extensions/postgis` SQL/control.
 # Use the release tarball — it ships a pre-generated ./configure (no autogen).
 curl -fsSL https://download.osgeo.org/postgis/source/postgis-3.6.0.tar.gz -o "$src/postgis.tgz"
 mkdir -p "$src/postgis" && tar xzf "$src/postgis.tgz" -C "$src/postgis" --strip-components=1
 ( cd "$src/postgis"
-  ./configure --prefix="$prefix" --with-pgconfig="$PGC" \
-    --without-raster --without-protobuf --without-topology
-  make -j"$ncpu" && make install )
+  ./configure --prefix="$prefix" --with-pgconfig="$PGC" --without-raster --without-protobuf
+  make -j"$ncpu" -C liblwgeom
+  [ -d deps ] && make -j"$ncpu" -C deps || true
+  make -j"$ncpu" -C libpgcommon
+  make -j"$ncpu" -C postgis && make -C postgis install
+  make -j"$ncpu" -C extensions/postgis && make -C extensions/postgis install )
 
 # ── 4. DocumentDB extensions (core + api + extended_rum) ─────────────────────
 git clone --depth 1 --branch "$ref" https://github.com/microsoft/documentdb.git "$src/documentdb"
