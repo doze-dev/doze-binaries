@@ -39,12 +39,11 @@ if is_darwin; then
   cp -f pg_documentdb_core/pg_documentdb_core.dylib "$LIB_DIR/pg_documentdb_core.dylib"
 fi
 
-# 2. documentdb_extended_rum (the RUM index access method DocumentDB preloads)
-make -C pg_documentdb_extended_rum -j"$ncpu" PG_CONFIG="$PGC" COPT="$COPT"
-make -C pg_documentdb_extended_rum    PG_CONFIG="$PGC" COPT="$COPT" install
-
-# 3. documentdb (api) — build, install, then on macOS relink the bundle to
+# 2. documentdb (api) — build, install, then on macOS relink the bundle to
 #    re-export core so dlsym finds core's functions through the api library.
+#    Built BEFORE extended_rum: upstream's order is core -> api -> extended_rum,
+#    and extended_rum (USE_DOCUMENTDB=1) links `-l:pg_documentdb.so`, so the api
+#    must already exist on Linux.
 make -C pg_documentdb -j"$ncpu" PG_CONFIG="$PGC" COPT="$COPT"
 make -C pg_documentdb    PG_CONFIG="$PGC" COPT="$COPT" install
 if is_darwin; then
@@ -56,5 +55,10 @@ if is_darwin; then
       -Wl,-undefined,dynamic_lookup ${SDK:+-isysroot "$SDK"} )
   cp -f pg_documentdb/pg_documentdb.dylib "$LIB_DIR/pg_documentdb.dylib"
 fi
+
+# 3. documentdb_extended_rum (the RUM index access method DocumentDB preloads).
+#    Depends on the api above (-l:pg_documentdb.so on Linux).
+make -C pg_documentdb_extended_rum -j"$ncpu" PG_CONFIG="$PGC" COPT="$COPT"
+make -C pg_documentdb_extended_rum    PG_CONFIG="$PGC" COPT="$COPT" install
 
 echo "documentdb extensions installed into $LIB_DIR"

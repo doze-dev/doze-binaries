@@ -117,8 +117,11 @@ case "$triple" in
     # ICU lives keg-only on macOS; ensure documentdb_core links it.
     grep -q "icu4c" Makefile.cflags || printf '\nPG_LDFLAGS += -L%s/lib -licui18n -licuuc -licudata\n' "$ICU_DIR" >> Makefile.cflags
     # DocumentDB codegen needs bash 5 (uses ${x^^}, declare -A) and GNU cpp for
-    # SQL token-paste. Provide both.
-    sed -i.bak '1 s|^#!/bin/bash|#!/usr/bin/env bash|' scripts/generate_error_values.sh && rm -f scripts/generate_error_values.sh.bak
+    # SQL token-paste. Repoint every codegen script's hard `#!/bin/bash` (macOS
+    # ships bash 3.2) at the modern bash we put first on PATH.
+    for s in scripts/*.sh; do
+      sed -i.bak '1 s|^#!/bin/bash|#!/usr/bin/env bash|' "$s" && rm -f "$s.bak"
+    done
     mkdir -p "$src/bin" && ln -sf "$GNU_CPP" "$src/bin/cpp"
     export PATH="$src/bin:$PATH"
     # strip the hard -Werror across the tree (macOS clang trips many extra warnings)
