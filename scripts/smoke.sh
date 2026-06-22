@@ -58,8 +58,9 @@ case "$engine" in
     # documentdb_api insert/count — the whole point of this artifact.
     data="$work/data"; sock="$work/sock"; mkdir -p "$sock"
     run "$dir/bin/initdb" -D "$data" -U postgres --no-sync -E UTF8 --locale=C
+    # DocumentDB self-connects over TCP (localhost) for inserts, so TCP must be on.
     cat >> "$data/postgresql.conf" <<EOF
-listen_addresses = ''
+listen_addresses = '127.0.0.1'
 unix_socket_directories = '$sock'
 port = 5499
 shared_preload_libraries = 'pg_cron,pg_documentdb_core,pg_documentdb'
