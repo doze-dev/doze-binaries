@@ -152,6 +152,12 @@ esac
 
 "$root/recipes/documentdb/build-documentdb.sh" "$src/documentdb" "$PGC" "$deps" "$triple" "$ICU_DIR" "$LIB_DIR" "$EXT_DIR"
 
+# ── 4b. pre-initialized cluster template (fast first boot) ───────────────────
+# Run initdb + CREATE EXTENSION documentdb CASCADE once, here, and ship the
+# result. doze clones it instead of paying that cost on first connect. Built
+# before bundling, using the just-built binaries against the build-time deps.
+"$root/recipes/documentdb/build-template.sh" "$prefix"
+
 # ── 5. make relocatable + package + smoke ───────────────────────────────────
 case "$triple" in
   *darwin*) "$root/scripts/bundle-macos-deps.sh" "$prefix" "$(brew --prefix)" ;;
