@@ -119,7 +119,13 @@ done
 COPT_COMMON="-Wno-error"
 case "$triple" in
   *darwin*)
-    # GNU linker syntax -> macOS; defer cross-extension symbols to runtime.
+    # ld64 has no GNU `-l:exact.so`; drop the cross-extension link entirely and
+    # defer those symbols (core's bson_in, the api's exports) to runtime via
+    # `-undefined dynamic_lookup`. They resolve through RTLD_GLOBAL — Postgres
+    # preloads pg_documentdb_core before pg_documentdb (see build-documentdb.sh).
+    # PGXS still appends `-bundle_loader .../postgres`, so the Postgres backend
+    # symbols (incl. hash_search, which libSystem ALSO defines) bind to the
+    # executable rather than libc. Also fix GNU rpath syntax and the ICU keg path.
     sed -i.bak 's/-Wl,-rpath=/-Wl,-rpath,/g; s#-l:pg_documentdb_core.so -L \$(DOCUMENTDB_CORE_DIR)#-Wl,-undefined,dynamic_lookup#; s#-l:pg_documentdb.so -L \$(DOCUMENTDB_DIR)#-Wl,-undefined,dynamic_lookup#; s#/opt/homebrew/opt/icu4c@78#'"$ICU_DIR"'#g' Makefile.cflags && rm -f Makefile.cflags.bak
     # ICU lives keg-only on macOS; ensure documentdb_core links it.
     grep -q "icu4c" Makefile.cflags || printf '\nPG_LDFLAGS += -L%s/lib -licui18n -licuuc -licudata\n' "$ICU_DIR" >> Makefile.cflags

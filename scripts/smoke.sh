@@ -109,8 +109,14 @@ EOF
     psql -c "SELECT documentdb_api.binary_extended_version();" >/dev/null
     psql -c "SELECT documentdb_api.insert_one('smoke','c','{\"_id\":1,\"ok\":true}');" >/dev/null
     n="$(psql -c "SELECT documentdb_api.count_query('smoke','{\"count\":\"c\"}');")"
+    # Index creation exercises the BSON field-dedup path, which crashed on macOS
+    # when documentdb_core's hash_search wrongly bound to libSystem instead of
+    # Postgres's. Build the index in the foreground (run within this session, no
+    # background worker) so a regression fails the smoke right here.
+    psql -c "SELECT documentdb_api.create_indexes_background('smoke','{\"createIndexes\":\"c\",\"indexes\":[{\"key\":{\"ok\":1},\"name\":\"ok_1\"}]}');" >/dev/null
+    psql -c "SELECT documentdb_api.list_indexes_cursor_first_page('smoke','{\"listIndexes\":\"c\"}');" >/dev/null
     "$dir/bin/pg_ctl" -D "$data" stop -m immediate >/dev/null 2>&1 || true
-    echo "  smoke: documentdb insert/count ok ($n)"
+    echo "  smoke: documentdb insert/count/createIndex ok ($n)"
     ;;
   *)
     # Unknown engine: at least prove every binary loads (dyld/ld resolves deps).
