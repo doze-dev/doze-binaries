@@ -1,4 +1,4 @@
-module github.com/NerdMeNot/doze-binaries
+module github.com/doze-dev/doze-binaries
 
 go 1.23
 

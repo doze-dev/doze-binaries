@@ -2,7 +2,7 @@
 # independently (per-engine reusable workflow → per-engine rolling release), so a
 # slow or failing engine never blocks the others. doze consumes each engine from
 # its own release base:
-#   DOZE_<ENGINE>_MIRROR=https://github.com/NerdMeNot/doze-binaries/releases/download/<engine>
+#   DOZE_<ENGINE>_MIRROR=https://github.com/doze-dev/doze-binaries/releases/download/<engine>
 name: release
 
 on:
