@@ -6,21 +6,10 @@ import (
 	"io"
 	"net/http"
 	"os"
-	"sort"
 	"strings"
 
 	"gopkg.in/yaml.v3"
 )
-
-// config mirrors versions.yaml. Versions are explicit — dzb plan does no
-// upstream resolution. It is the cumulative catalog of everything that should
-// be published; entries are only ever added.
-type config struct {
-	Triples map[string]string `yaml:"triples"`
-	Engines map[string]struct {
-		Versions []string `yaml:"versions"`
-	} `yaml:"engines"`
-}
 
 // matrixItem is one (engine, version, triple) build job.
 type matrixItem struct {
@@ -31,83 +20,24 @@ type matrixItem struct {
 	Runner  string `json:"runner"`
 }
 
-// engineRule derives, from the upstream version written in versions.yaml, the
-// three-part version used in the archive name and the source ref to build.
-type engineRule struct {
-	archiveVersion func(string) string
-	ref            func(string) string
-}
-
-// engineOrder fixes engine iteration order so the emitted matrix is deterministic.
-var engineOrder = []string{"postgres", "valkey", "kvrocks", "ferretdb", "documentdb"}
-
-var engineRules = map[string]engineRule{
-	// Postgres: real two-part version (16.14) -> archive 16.14.0, branch REL_16_14.
-	"postgres": {
-		archiveVersion: func(v string) string { return v + ".0" },
-		ref:            func(v string) string { return "REL_" + strings.ReplaceAll(v, ".", "_") },
-	},
-	// Valkey tags carry no leading "v".
-	"valkey": {
-		archiveVersion: func(v string) string { return v },
-		ref:            func(v string) string { return v },
-	},
-	// Kvrocks and FerretDB tags are "vX.Y.Z".
-	"kvrocks": {
-		archiveVersion: func(v string) string { return v },
-		ref:            func(v string) string { return "v" + v },
-	},
-	"ferretdb": {
-		archiveVersion: func(v string) string { return v },
-		ref:            func(v string) string { return "v" + v },
-	},
-	// DocumentDB tags are "vX.Y-Z" (e.g. v0.112-0); the version string keeps the
-	// dash and is used verbatim in the archive name.
-	"documentdb": {
-		archiveVersion: func(v string) string { return v },
-		ref:            func(v string) string { return "v" + v },
-	},
-}
-
 func runPlan(args []string) error {
-	data, err := os.ReadFile("versions.yaml")
+	cfg, err := loadConfig()
 	if err != nil {
 		return err
 	}
-	var cfg config
-	if err := yaml.Unmarshal(data, &cfg); err != nil {
-		return fmt.Errorf("parsing versions.yaml: %w", err)
-	}
-
-	// Catch typos: any engine in the config we don't know how to build.
-	for engine := range cfg.Engines {
-		if _, ok := engineRules[engine]; !ok {
-			return fmt.Errorf("unknown engine %q in versions.yaml", engine)
-		}
-	}
 
 	// Optional engine filter — per-engine workflows pass a single engine.
-	engines := engineOrder
+	engines := cfg.engineNames()
 	if len(args) > 0 && args[0] != "" {
-		if _, ok := engineRules[args[0]]; !ok {
-			return fmt.Errorf("unknown engine %q", args[0])
+		if _, ok := cfg.Engines[args[0]]; !ok {
+			return fmt.Errorf("unknown engine %q (not in versions.yaml)", args[0])
 		}
 		engines = []string{args[0]}
 	}
 
-	// Stable triple order so the emitted matrix is deterministic.
-	triples := make([]string, 0, len(cfg.Triples))
-	for t := range cfg.Triples {
-		triples = append(triples, t)
-	}
-	sort.Strings(triples)
-
 	include := []matrixItem{}
 	for _, engine := range engines {
-		spec, ok := cfg.Engines[engine]
-		if !ok {
-			continue
-		}
+		spec := cfg.Engines[engine]
 		// Already-published artifacts are immutable; never rebuild them (a rebuild
 		// would change a checksum and break every lockfile that pinned it).
 		published, err := publishedArtifacts(engine)
@@ -115,15 +45,17 @@ func runPlan(args []string) error {
 			return err
 		}
 		forced := rebuildSet()
-		rule := engineRules[engine]
+		// Stable triple order so the emitted matrix is deterministic; an engine
+		// may restrict its platforms (see engineSpec.Triples).
+		triples := cfg.triplesFor(spec)
 		for _, v := range spec.Versions {
-			full := rule.archiveVersion(v)
+			full := spec.archiveVersion(v)
 			for _, t := range triples {
 				if published[key(engine, full, t)] && !forced(full, t) {
 					continue // already built and frozen (DZB_REBUILD overrides)
 				}
 				include = append(include, matrixItem{
-					Engine: engine, Version: full, Ref: rule.ref(v),
+					Engine: engine, Version: full, Ref: spec.ref(v),
 					Triple: t, Runner: cfg.Triples[t],
 				})
 			}

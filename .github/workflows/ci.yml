@@ -1,0 +1,84 @@
+# PR gate for doze-binaries. Release builds every engine × triple on push/dispatch
+# (slow, source builds), so PRs get a fast, targeted check instead:
+#   - tooling: dzb builds + runs, and every recipe/script is shell-linted.
+#   - smoke:   any engine whose recipe changed is built AND run (smoke.sh) on the
+#              native runner for both Linux and macOS — so a broken recipe, or a
+#              binary that doesn't actually work on Linux, is caught before merge.
+name: ci
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  tooling:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
+        with: { go-version: 'stable' }
+      - name: dzb builds + runs
+        run: |
+          go build ./cmd/dzb
+          go run ./cmd/dzb engines
+          go run ./cmd/dzb plan >/dev/null
+          go run ./cmd/dzb manifest /nonexistent https://example.com >/dev/null 2>&1 || true
+      - name: Shell-lint recipes + scripts
+        run: |
+          sudo apt-get update && sudo apt-get install -y shellcheck
+          for f in recipes/*/build.sh scripts/*.sh; do
+            bash -n "$f"
+            shellcheck -S warning "$f" || true   # advisory; bash -n is the hard gate
+          done
+
+  # Determine which engines' recipes changed in this PR (plus a packaging smoke
+  # when shared scripts/versions change), so smoke only builds what's affected.
+  changes:
+    runs-on: ubuntu-latest
+    outputs:
+      engines: ${{ steps.detect.outputs.engines }}
+    steps:
+      - uses: actions/checkout@v5
+        with: { fetch-depth: 0 }
+      - id: detect
+        env:
+          BASE: ${{ github.event.pull_request.base.sha }}
+        run: |
+          changed="$(git diff --name-only "$BASE" HEAD -- recipes scripts versions.yaml || true)"
+          engines="$(echo "$changed" | grep '^recipes/' | cut -d/ -f2 | sort -u || true)"
+          # A change to shared scripts/ or the catalog affects packaging for all —
+          # smoke one fast engine (valkey) as a representative packaging check.
+          if echo "$changed" | grep -qE '^(scripts/|versions\.yaml)'; then
+            engines="$engines valkey"
+          fi
+          json="$(echo "$engines" | tr ' ' '\n' | grep . | sort -u | jq -R . | jq -sc . || echo '[]')"
+          echo "engines=${json:-[]}" >> "$GITHUB_OUTPUT"
+          echo "changed engines: ${json:-[]}"
+
+  smoke:
+    needs: changes
+    if: needs.changes.outputs.engines != '[]' && needs.changes.outputs.engines != ''
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-14]
+        engine: ${{ fromJSON(needs.changes.outputs.engines) }}
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
+        with: { go-version: 'stable' }
+      - name: Build + smoke ${{ matrix.engine }} (newest version)
+        run: |
+          case "${{ matrix.os }}" in
+            ubuntu*) triple=x86_64-unknown-linux-gnu ;;
+            macos*)  triple=aarch64-apple-darwin ;;
+          esac
+          read -r version ref < <(go run ./cmd/dzb latest "${{ matrix.engine }}")
+          echo "building ${{ matrix.engine }} $version ($ref) for $triple"
+          chmod +x scripts/*.sh recipes/*/*.sh
+          recipes/${{ matrix.engine }}/build.sh "$version" "$ref" "$triple" dist
+          # build.sh invokes scripts/smoke.sh, which RUNS the built binary from a
+          # relocated path — the real "does it work on this OS" check.

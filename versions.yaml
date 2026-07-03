@@ -4,6 +4,16 @@
 # immutable (never rebuilt or deleted), so old versions stay resolvable forever
 # and committed doze.lock files keep working. To publish new versions, ADD them
 # here and run the release workflow; it builds only what isn't already published.
+#
+# Adding a NEW backing engine is a single entry here plus a recipes/<engine>/
+# build.sh — dzb plan/manifest/engines all derive their behaviour from these
+# fields, so there is no second list to touch. Per-engine rule fields:
+#   ref            source-ref template from the upstream version. {v} = verbatim,
+#                  {v_} = dots->underscores. Default "{v}".
+#   archive_suffix appended to the version to form the archive version field.
+#                  Default "" (postgres uses ".0": 16.14 -> archive 16.14.0).
+#   archive_name   on-disk archive prefix when it differs from the engine key
+#                  (postgres archives are named "postgresql"). Default: the key.
 
 # Target triple -> GitHub runner. All native builds (no cross-compilation).
 # (Intel macOS / x86_64-apple-darwin is omitted: macos-13 runners are scarce and
@@ -17,15 +27,36 @@ engines:
   # Postgres uses its real upstream version (two-part, e.g. 16.14); the archive
   # is named 16.14.0 and built from the REL_16_14 branch.
   postgres:
+    ref: "REL_{v_}"
+    archive_suffix: ".0"
+    archive_name: postgresql
     versions: ["14.23", "15.18", "16.14", "17.10", "18.4"]
   valkey:
+    ref: "{v}"
     versions: ["8.1.8", "9.1.0"]
   kvrocks:
+    ref: "v{v}"
     versions: ["2.15.0"]
   ferretdb:
+    ref: "v{v}"
     versions: ["2.7.0"]
   # documentdb = a self-contained Postgres 18 with Microsoft's DocumentDB
   # extension chain compiled in; doze fronts it with FerretDB. Tags are vX.Y-Z.
   # Postgres is pinned inside the recipe (not user-selected).
   documentdb:
+    ref: "v{v}"
     versions: ["0.112-0"]
+  # MariaDB: generic binary tarballs repackaged per triple (see recipes/mariadb).
+  # Upstream tags are "mariadb-<v>"; the version is used verbatim in the archive.
+  mariadb:
+    ref: "mariadb-{v}"
+    # Upstream publishes generic binary tarballs for x86_64 Linux ONLY (verified
+    # against archive.mariadb.org across 11.4–12.x) — the other triples need a
+    # source-build recipe arm before they can ship.
+    triples: [x86_64-unknown-linux-gnu]
+    versions: ["11.4.5"]
+  # Temporal: the temporalio/cli release (a single pure-Go binary bundling the
+  # dev server + SQLite + Web UI), cross-compiled per triple. Tags are "vX.Y.Z".
+  temporal:
+    ref: "v{v}"
+    versions: ["1.1.0"]

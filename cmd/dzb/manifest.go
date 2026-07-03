@@ -30,12 +30,20 @@ type manifest struct {
 	Engines map[string]*engineManifest `yaml:"engines"`
 }
 
-// archiveName captures engine, full version, and triple. "postgresql" is
-// normalised to "postgres" to match doze's engine naming. The version is matched
-// loosely (.+) and the triple is anchored to a known arch+os tail: documentdb's
-// version itself contains a dash (e.g. 0.112-0), so a fixed dotted pattern can't
-// be used and the triple boundary must be pinned instead.
-var archiveName = regexp.MustCompile(`^(postgresql|valkey|kvrocks|ferretdb|documentdb)-(.+)-((?:aarch64|x86_64)-(?:apple-darwin|unknown-linux-gnu))\.tar\.gz$`)
+// buildArchiveNameRe compiles the archive-name matcher from the archive prefixes
+// declared in versions.yaml (e.g. postgresql|valkey|…), so adding an engine needs
+// no edit here. It captures archive-prefix, full version, and triple. The version
+// is matched loosely (.+) and the triple is anchored to a known arch+os tail:
+// documentdb's version itself contains a dash (e.g. 0.112-0), so a fixed dotted
+// pattern can't be used and the triple boundary must be pinned instead.
+func buildArchiveNameRe(prefixes []string) *regexp.Regexp {
+	quoted := make([]string, len(prefixes))
+	for i, p := range prefixes {
+		quoted[i] = regexp.QuoteMeta(p)
+	}
+	return regexp.MustCompile(`^(` + strings.Join(quoted, "|") +
+		`)-(.+)-((?:aarch64|x86_64)-(?:apple-darwin|unknown-linux-gnu))\.tar\.gz$`)
+}
 
 // runManifest builds the multi-engine index.yaml. It is CUMULATIVE: if an
 // existing manifest is given, newly built archives are merged into it and no
@@ -48,6 +56,13 @@ func runManifest(args []string) error {
 	}
 	dist, base := args[0], strings.TrimRight(args[1], "/")
 	forced := rebuildSet()
+
+	cfg, err := loadConfig()
+	if err != nil {
+		return err
+	}
+	prefixes, toEngine := cfg.archivePrefixes()
+	archiveName := buildArchiveNameRe(prefixes)
 
 	man := manifest{Engines: map[string]*engineManifest{}}
 	if len(args) == 3 {
@@ -74,10 +89,8 @@ func runManifest(args []string) error {
 		if m == nil {
 			continue
 		}
-		engine, full, triple := m[1], m[2], m[3]
-		if engine == "postgresql" {
-			engine = "postgres"
-		}
+		prefix, full, triple := m[1], m[2], m[3]
+		engine := toEngine[prefix] // archive prefix -> engine key (e.g. postgresql -> postgres)
 		em := man.Engines[engine]
 		if em == nil {
 			em = &engineManifest{Versions: map[string]string{}, Artifacts: map[string]map[string]artifact{}}

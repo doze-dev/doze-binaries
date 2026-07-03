@@ -118,6 +118,47 @@ EOF
     "$dir/bin/pg_ctl" -D "$data" stop -m immediate >/dev/null 2>&1 || true
     echo "  smoke: documentdb insert/count/createIndex ok ($n)"
     ;;
+  mariadb)
+    # Prove the server + tools load from the relocated path, init the system
+    # tables, then actually BOOT mariadbd and run a query end to end.
+    check_relocation "$dir"
+    run "$dir/bin/mariadbd" --version
+    run "$dir/bin/mariadb" --version
+    data="$work/data"; sock="$work/my.sock"
+    run "$dir/bin/mariadb-install-db" --no-defaults --datadir="$data" \
+      --auth-root-authentication-method=normal --skip-test-db
+    "$dir/bin/mariadbd" --no-defaults --datadir="$data" --socket="$sock" \
+      --skip-networking --pid-file="$work/my.pid" >"$work/maria.log" 2>&1 &
+    mpid=$!
+    ready=0
+    for _ in $(seq 1 30); do
+      if "$dir/bin/mariadb-admin" --no-defaults --socket="$sock" --user=root ping >/dev/null 2>&1; then ready=1; break; fi
+      sleep 1
+    done
+    [ "$ready" = 1 ] || { echo "smoke: mariadbd never became ready"; cat "$work/maria.log"; kill "$mpid" 2>/dev/null; exit 1; }
+    got="$("$dir/bin/mariadb" --no-defaults --socket="$sock" --user=root --batch --skip-column-names -e 'SELECT 1')"
+    "$dir/bin/mariadb-admin" --no-defaults --socket="$sock" --user=root shutdown >/dev/null 2>&1 || kill "$mpid" 2>/dev/null || true
+    [ "$got" = "1" ] || { echo "smoke: mariadb query returned '$got', want 1"; exit 1; }
+    echo "  smoke: mariadbd boot + query ok"
+    ;;
+  temporal)
+    # Pure-Go single binary: prove it loads, then actually stand up the bundled
+    # dev server (server + SQLite) headless and confirm the frontend accepts a
+    # connection on its port.
+    run "$dir/bin/temporal" --version
+    port=17233
+    "$dir/bin/temporal" server start-dev --headless --ip 127.0.0.1 --port "$port" \
+      --db-filename "$work/temporal.db" >"$work/temporal.log" 2>&1 &
+    tpid=$!
+    ready=0
+    for _ in $(seq 1 40); do
+      if (exec 3<>"/dev/tcp/127.0.0.1/$port") 2>/dev/null; then exec 3>&- 3<&-; ready=1; break; fi
+      sleep 1
+    done
+    kill "$tpid" 2>/dev/null || true
+    [ "$ready" = 1 ] || { echo "smoke: temporal frontend never opened :$port"; cat "$work/temporal.log"; exit 1; }
+    echo "  smoke: temporal start-dev frontend up ok"
+    ;;
   *)
     # Unknown engine: at least prove every binary loads (dyld/ld resolves deps).
     for b in "$dir"/bin/*; do [ -x "$b" ] && run "$b" --version || true; done

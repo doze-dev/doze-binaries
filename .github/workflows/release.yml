@@ -23,11 +23,26 @@ permissions:
   contents: write
 
 jobs:
+  # Derive the engine list from versions.yaml so adding an engine there (plus a
+  # recipe) is all it takes — no hardcoded matrix to keep in sync.
+  engines:
+    runs-on: ubuntu-latest
+    outputs:
+      list: ${{ steps.list.outputs.list }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - id: list
+        run: echo "list=$(go run ./cmd/dzb engines)" >> "$GITHUB_OUTPUT"
+
   engine:
+    needs: engines
     strategy:
       fail-fast: false
       matrix:
-        engine: [postgres, valkey, kvrocks, ferretdb, documentdb]
+        engine: ${{ fromJSON(needs.engines.outputs.list) }}
     uses: ./.github/workflows/build-engine.yml
     with:
       engine: ${{ matrix.engine }}
