@@ -57,10 +57,17 @@ for b in mariadbd mariadb mariadb-admin mariadb-install-db; do
   fi
 done
 
-# Runtime support data mariadbd loads by relative path: error messages, charsets,
-# and the storage-engine/auth plugin directory.
-cp -R "$src/share/english"  "$prefix/share/" 2>/dev/null || true
-cp -R "$src/share/charsets" "$prefix/share/" 2>/dev/null || true
+# Runtime support data: mariadbd loads error messages + charsets by relative
+# path, and mariadb-install-db bootstraps the system tables from the SQL files
+# in share/ (mysql_system_tables.sql and friends). Ship the whole share/ tree —
+# it is plain data, relocation-safe, and cherry-picking it is how the first
+# release attempt broke.
+cp -R "$src/share/." "$prefix/share/" 2>/dev/null || true
+
+# Helper tools mariadb-install-db shells out to.
+for b in my_print_defaults resolveip; do
+  [ -x "$src/bin/$b" ] && cp -p "$src/bin/$b" "$prefix/bin/$b" || true
+done
 [ -d "$src/lib/plugin" ] && cp -R "$src/lib/plugin" "$prefix/lib/" || true
 
 # Drop optional plugins that link system libraries doze never ships — they trip
