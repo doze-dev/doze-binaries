@@ -48,6 +48,10 @@ for b in mariadbd mariadb mariadb-admin mariadb-install-db; do
     cp -p "$src/bin/$b" "$prefix/bin/$b"
   elif [ -x "$src/sbin/$b" ]; then
     cp -p "$src/sbin/$b" "$prefix/bin/$b"
+  elif [ -x "$src/scripts/$b" ]; then
+    # mariadb-install-db is a shell script shipped under scripts/ in the
+    # generic tarballs; it takes --basedir so it relocates fine.
+    cp -p "$src/scripts/$b" "$prefix/bin/$b"
   else
     echo "warning: $b not found in upstream tarball" >&2
   fi
@@ -58,6 +62,11 @@ done
 cp -R "$src/share/english"  "$prefix/share/" 2>/dev/null || true
 cp -R "$src/share/charsets" "$prefix/share/" 2>/dev/null || true
 [ -d "$src/lib/plugin" ] && cp -R "$src/lib/plugin" "$prefix/lib/" || true
+
+# Drop optional plugins that link system libraries doze never ships — they trip
+# the relocation gate and serve no doze use case: OQGraph (libJudy), cracklib
+# password strength (libcrack).
+rm -f "$prefix/lib/plugin/ha_oqgraph.so" "$prefix/lib/plugin/cracklib_password_check.so"
 
 # Relocate any bundled dylibs/so so nothing points at the build/extract path.
 "$root/scripts/bundle-macos-deps.sh" "$prefix" 2>/dev/null || true
