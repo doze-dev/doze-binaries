@@ -70,6 +70,24 @@ type engineSpec struct {
 	// engine whose upstream only publishes some platforms (mariadb: upstream
 	// generic tarballs are x86_64-linux only). Default: every global triple.
 	Triples []string `yaml:"triples"`
+	// MajorParts is how many dot-parts of a full version form the engine's
+	// MAJOR — the index key doze modules resolve against, which must match the
+	// major the module's Describe() declares. Default 1 (postgres 16.14.0 →
+	// "16"); temporal declares "1.1", so it sets 2 (1.1.0 → "1.1").
+	MajorParts int `yaml:"major_parts"`
+}
+
+// majorKey returns the index versions key for a full version: its first n
+// dot-parts (n < 1 → 1).
+func majorKey(full string, parts int) string {
+	if parts < 1 {
+		parts = 1
+	}
+	segs := strings.Split(full, ".")
+	if len(segs) > parts {
+		segs = segs[:parts]
+	}
+	return strings.Join(segs, ".")
 }
 
 // triplesFor returns the engine's build triples: its own restriction when set,

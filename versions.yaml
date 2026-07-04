@@ -59,4 +59,7 @@ engines:
   # dev server + SQLite + Web UI), cross-compiled per triple. Tags are "vX.Y.Z".
   temporal:
     ref: "v{v}"
+    # The temporal module's engine major is two-part ("1.1"), so the index
+    # keys versions by the first two dot-parts.
+    major_parts: 2
     versions: ["1.1.0"]

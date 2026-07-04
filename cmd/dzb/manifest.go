@@ -115,11 +115,14 @@ func runManifest(args []string) error {
 		em.Artifacts[full][triple] = artifact{URL: base + "/" + e.Name(), SHA256: sum}
 	}
 
-	// Recompute each engine's major->newest-full map over the full union.
-	for _, em := range man.Engines {
+	// Recompute each engine's major->newest-full map over the full union. The
+	// major key depth is per-engine (major_parts): it must match the major the
+	// engine's doze module declares, or resolution misses ("no temporal 1.1").
+	for name, em := range man.Engines {
+		parts := cfg.Engines[name].MajorParts
 		em.Versions = map[string]string{}
 		for full := range em.Artifacts {
-			major, _, _ := strings.Cut(full, ".")
+			major := majorKey(full, parts)
 			if cur, ok := em.Versions[major]; !ok || versionLess(cur, full) {
 				em.Versions[major] = full
 			}
