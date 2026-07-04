@@ -62,8 +62,9 @@ jobs:
       matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
     steps:
       - uses: actions/checkout@v5
+      # Go for the Go-built engines (ferretdb, temporal) — unconditional so a
+      # new Go engine never trips over a bare runner (macOS images ship no go).
       - uses: actions/setup-go@v6
-        if: inputs.engine == 'ferretdb'
         with:
           go-version: "stable"
       - name: Build
