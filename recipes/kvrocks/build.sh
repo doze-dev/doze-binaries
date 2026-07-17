@@ -29,6 +29,11 @@ case "$triple" in
     # Keep `brew install` from cascading into unrelated upgrades (see postgres).
     export HOMEBREW_NO_AUTO_UPDATE=1 HOMEBREW_NO_INSTALLED_DEPENDENTS_CHECK=1 HOMEBREW_NO_INSTALL_UPGRADE=1
     brew install cmake openssl@3 automake autoconf libtool || true
+    # kvrocks ≤2.13 forwards "-isysroot ${CMAKE_OSX_SYSROOT}" into its lz4/zstd
+    # sub-makes. CMake 4.x no longer sets CMAKE_OSX_SYSROOT by default, so the
+    # flag expanded empty and -isysroot swallowed the next arg ("no such sysroot
+    # directory", then missing stdlib.h). SDKROOT re-seeds it on any CMake.
+    export SDKROOT="$(xcrun --sdk macosx --show-sdk-path)"
     ;;
 esac
 
