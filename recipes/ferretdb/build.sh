@@ -16,20 +16,10 @@ mkdir -p "$out"; out="$(cd "$out" && pwd)"   # absolute, so output survives late
 root="$(cd "$(dirname "$0")/../.." && pwd)"
 prefix="$(mktemp -d)/ferretdb"; mkdir -p "$prefix/bin"
 
-case "$triple" in
-  x86_64-*linux*)   export GOOS=linux  GOARCH=amd64 ;;
-  aarch64-*linux*)  export GOOS=linux  GOARCH=arm64 ;;
-  x86_64-*darwin*)  export GOOS=darwin GOARCH=amd64 ;;
-  aarch64-*darwin*) export GOOS=darwin GOARCH=arm64 ;;
-  *) echo "unknown triple: $triple" >&2; exit 1 ;;
-esac
-export CGO_ENABLED=0
-
-pkg="github.com/FerretDB/FerretDB/v2/cmd/ferretdb"
-work="$(mktemp -d)"; cd "$work"
-go mod init dozebuild >/dev/null 2>&1
-GOFLAGS=-mod=mod go get "$pkg@$ref"
-GOFLAGS=-mod=mod go build -trimpath -o "$prefix/bin/ferretdb" "$pkg"
+# Build inside the upstream clone so its go.sum pins the dependency graph
+# (see scripts/build-go-binary.sh for why fresh resolution is not an option).
+"$root/scripts/build-go-binary.sh" https://github.com/FerretDB/FerretDB.git \
+  "$ref" "$triple" ./cmd/ferretdb "$prefix/bin/ferretdb"
 
 "$root/scripts/package.sh" "$prefix" "ferretdb-$version-$triple" "$out"
 "$root/scripts/smoke.sh" ferretdb "$out/ferretdb-$version-$triple.tar.gz" "$triple"

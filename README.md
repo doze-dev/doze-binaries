@@ -8,22 +8,26 @@ binary **mirror**. No third-party repackagers: doze controls the whole chain.
 
 | Engine | What we ship | How it's produced |
 |---|---|---|
-| **PostgreSQL** | one minor per major, 14–17 | built from source (`git.postgresql.org`) |
-| **Valkey** | two majors (8.x, 9.x) | built from source (no upstream binaries) |
-| **Kvrocks** | 2.x | built from source (RocksDB-backed; the slow one) |
-| **FerretDB** | 2.x | cross-compiled from source (pure Go) |
+| **PostgreSQL** | every minor of majors 14–18 | built from source (`git.postgresql.org`) |
+| **Valkey** | every stable release from 8.0 | built from source (no upstream binaries) |
+| **Kvrocks** | every stable 2.x from 2.1 | built from source (RocksDB-backed; the slow one) |
+| **FerretDB** | 2.7.0 (gateway↔documentdb pairing gates a back-catalog) | compiled from source (pure Go) |
+| **DocumentDB** | the extension release the ferret module pins | Postgres 18 + Microsoft's extension chain, from source |
+| **MariaDB** | every GA patch of the 11.4/11.8/12.x lines | upstream generic tarballs, repackaged (x86_64 Linux only) |
+| **Temporal** | every stable CLI release from 1.0 | compiled from source (pure Go) |
 
-Exact versions are **pinned explicitly** in [`versions.yaml`](versions.yaml) —
-nothing is auto-resolved, so a release builds precisely what's listed and every
-change is a reviewable diff.
+The authoritative list is [`versions.yaml`](versions.yaml) — exact versions are
+**pinned explicitly** there, nothing is auto-resolved, so a release builds
+precisely what's listed and every change is a reviewable diff. (The table above
+is policy prose; when it disagrees with the catalog, the catalog is right.)
 
-Targets (4 triples, all on native runners — no cross-compilation/emulation):
+Targets (3 triples, all on native runners — no cross-compilation/emulation;
+Intel macOS is not supported):
 
 | Triple | Runner |
 |---|---|
 | `x86_64-unknown-linux-gnu` | `ubuntu-22.04` |
 | `aarch64-unknown-linux-gnu` | `ubuntu-22.04-arm` |
-| `x86_64-apple-darwin` | `macos-13` |
 | `aarch64-apple-darwin` | `macos-14` |
 
 > **glibc floor.** Linux binaries link the system glibc dynamically, so they
@@ -35,16 +39,23 @@ Targets (4 triples, all on native runners — no cross-compilation/emulation):
 ## Layout
 
 ```
-versions.yaml              build policy (which majors / how many latest majors)
+versions.yaml              the cumulative catalog: engines, versions, triples
 cmd/dzb/                   Go tool for the data work (no drift with doze's schema):
-  plan.go                    resolve upstream versions -> CI build matrix
+  catalog.go                 versions.yaml types + `engines`/`latest` subcommands
+  plan.go                    catalog minus published index -> CI build matrix
   manifest.go                dist/*.tar.gz -> index.yaml (per-engine manifest)
 scripts/                   shell, for orchestrating CLIs:
   package.sh                 tar.gz + .sha256 a staged install dir
+  smoke.sh                   publish gate: boot + exercise every archive
   bundle-linux-deps.sh       copy non-system .so + patchelf rpath
   bundle-macos-deps.sh       install_name_tool relocation + ad-hoc codesign
 recipes/<engine>/build.sh  build one (version, triple) into an archive
-.github/workflows/release.yml   plan -> build matrix -> publish
+                           (documentdb splits its build across several files)
+.github/workflows/
+  release.yml                push/dispatch -> one build-engine call per engine
+  build-engine.yml           reusable: plan -> build matrix -> publish (per engine)
+  verify.yml                 weekly: re-smoke every PUBLISHED artifact
+  ci.yml                     PR checks: dzb tests, shell lint, one recipe build
 ```
 
 The split is deliberate: shell orchestrates CLI tools (`tar`, `patchelf`,
@@ -130,6 +141,13 @@ checksum — independent of the manifest. `index.yaml` is for *discovery* and
 resolving a bare major; a pinned version installs as long as its frozen archive
 exists, which is forever.
 
-> **Status:** first-pass recipes. From-source multi-engine builds always need a
-> CI shakeout — expect to tune apt/brew package lists and a few flags on the
-> first green run.
+## Verification
+
+Every artifact passes `scripts/smoke.sh` before it publishes: extraction to a
+throwaway path, a relocation check on every bundled library, then a real boot
+and real operations (postgres boots and runs role/database/schema DDL plus
+`CREATE EXTENSION` for everything the archive ships; valkey and kvrocks answer
+commands; mariadbd initializes and serves a query; temporal's dev server comes
+up). The weekly **verify** workflow re-runs the *current* gate against every
+already-published artifact — published archives are immutable, so this is how
+the back-catalog gets re-examined when the gate deepens or runner images drift.

@@ -16,20 +16,13 @@ mkdir -p "$out"; out="$(cd "$out" && pwd)"
 root="$(cd "$(dirname "$0")/../.." && pwd)"
 prefix="$(mktemp -d)/temporal"; mkdir -p "$prefix/bin"
 
-case "$triple" in
-  x86_64-*linux*)   export GOOS=linux  GOARCH=amd64 ;;
-  aarch64-*linux*)  export GOOS=linux  GOARCH=arm64 ;;
-  x86_64-*darwin*)  export GOOS=darwin GOARCH=amd64 ;;
-  aarch64-*darwin*) export GOOS=darwin GOARCH=arm64 ;;
-  *) echo "unknown triple: $triple" >&2; exit 1 ;;
-esac
-export CGO_ENABLED=0
-
-pkg="github.com/temporalio/cli/cmd/temporal"
-work="$(mktemp -d)"; cd "$work"
-go mod init dozebuild >/dev/null 2>&1
-GOFLAGS=-mod=mod go get "$pkg@$ref"
-GOFLAGS=-mod=mod go build -trimpath -o "$prefix/bin/temporal" "$pkg"
+# Build inside the upstream clone so its go.sum pins the dependency graph
+# (see scripts/build-go-binary.sh for why fresh resolution is not an option).
+# The -X stamp mirrors upstream's release builds; without it an in-repo tag
+# build reports "0.0.0-DEV".
+"$root/scripts/build-go-binary.sh" https://github.com/temporalio/cli.git \
+  "$ref" "$triple" ./cmd/temporal "$prefix/bin/temporal" \
+  "-X github.com/temporalio/cli/temporalcli.Version=$version"
 
 "$root/scripts/package.sh" "$prefix" "temporal-$version-$triple" "$out"
 "$root/scripts/smoke.sh" temporal "$out/temporal-$version-$triple.tar.gz" "$triple"

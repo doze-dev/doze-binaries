@@ -31,6 +31,17 @@ case "$triple" in
   *) echo "unknown triple: $triple" >&2; exit 1 ;;
 esac
 
+case "$triple" in
+  *linux*)
+    sudo apt-get update -y
+    # patchelf: the bundle step hard-requires it (and now fails loudly).
+    # libncurses5/libtinfo5: the older 11.4.x generic tarballs' client links
+    # libncurses.so.5, which modern hosts no longer ship — it must exist HERE
+    # so ldd resolves it and bundle-linux-deps copies it into lib/.
+    sudo apt-get install -y patchelf libncurses5 libtinfo5
+    ;;
+esac
+
 base="mariadb-${version}-${plat}"
 url="https://archive.mariadb.org/${ref}/bintar-${plat}/${base}.tar.gz"
 
@@ -75,9 +86,14 @@ done
 # password strength (libcrack).
 rm -f "$prefix/lib/plugin/ha_oqgraph.so" "$prefix/lib/plugin/cracklib_password_check.so"
 
-# Relocate any bundled dylibs/so so nothing points at the build/extract path.
-"$root/scripts/bundle-macos-deps.sh" "$prefix" 2>/dev/null || true
-"$root/scripts/bundle-linux-deps.sh" "$prefix" 2>/dev/null || true
+# Relocate any bundled libs so nothing points at the build/extract path. Pick
+# the script by triple and let a failure FAIL the build — running both with
+# errors suppressed (as this once did) silently skipped genuine relocation
+# problems and left the smoke gate as the only line of defense.
+case "$triple" in
+  *linux*)  "$root/scripts/bundle-linux-deps.sh" "$prefix" ;;
+  *darwin*) "$root/scripts/bundle-macos-deps.sh" "$prefix" ;;
+esac
 
 "$root/scripts/package.sh" "$prefix" "mariadb-$version-$triple" "$out"
 "$root/scripts/smoke.sh" mariadb "$out/mariadb-$version-$triple.tar.gz" "$triple"

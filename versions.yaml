@@ -14,6 +14,14 @@
 #                  Default "" (postgres uses ".0": 16.14 -> archive 16.14.0).
 #   archive_name   on-disk archive prefix when it differs from the engine key
 #                  (postgres archives are named "postgresql"). Default: the key.
+#   triples        restrict the engine to a subset of the global triples, for an
+#                  upstream that only publishes some platforms (mariadb).
+#                  Default: every global triple.
+#   major_parts    how many dot-parts of a full version form the engine's MAJOR
+#                  — the index key doze modules resolve against, which must
+#                  match what the module's Describe() declares. Default 1
+#                  (postgres 16.14.0 -> "16"); temporal and mariadb use 2
+#                  (1.1.0 -> "1.1", 11.4.5 -> "11.4").
 
 # Target triple -> GitHub runner. All native builds (no cross-compilation).
 # (Intel macOS / x86_64-apple-darwin is omitted: macos-13 runners are scarce and
