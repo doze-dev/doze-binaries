@@ -22,6 +22,14 @@ on:
 permissions:
   contents: write
 
+# Never let two release runs overlap: each engine's publish step merges into
+# and re-uploads the rolling index.yaml, so concurrent runs could clobber each
+# other's freshly-appended entries (assets would survive but drop out of the
+# index). New pushes queue behind the running release instead.
+concurrency:
+  group: release
+  cancel-in-progress: false
+
 jobs:
   # Derive the engine list from versions.yaml so adding an engine there (plus a
   # recipe) is all it takes — no hardcoded matrix to keep in sync.
