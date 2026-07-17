@@ -90,18 +90,33 @@ engines:
     versions: ["0.112-0"]
   # MariaDB: generic binary tarballs repackaged per triple (see recipes/mariadb).
   # Upstream tags are "mariadb-<v>"; the version is used verbatim in the archive.
+  # Every GA patch of the 11.4+ lines (each line's .0/.1 are preview/RC and are
+  # omitted; GA starts at .2). All 21 tarball URLs verified present upstream.
+  # Like temporal, MariaDB's meaningful selector is the release LINE, so majors
+  # are keyed two-part: `version = "11.4"` -> newest 11.4.x.
   mariadb:
     ref: "mariadb-{v}"
+    major_parts: 2
     # Upstream publishes generic binary tarballs for x86_64 Linux ONLY (verified
     # against archive.mariadb.org across 11.4–12.x) — the other triples need a
     # source-build recipe arm before they can ship.
     triples: [x86_64-unknown-linux-gnu]
-    versions: ["11.4.5"]
+    versions: [
+      "11.4.2", "11.4.3", "11.4.4", "11.4.5", "11.4.6", "11.4.7", "11.4.8",
+      "11.4.9", "11.4.10", "11.4.11", "11.4.12",
+      "11.8.2", "11.8.3", "11.8.4", "11.8.5", "11.8.6", "11.8.7", "11.8.8",
+      "12.0.2", "12.1.2", "12.2.2",
+    ]
   # Temporal: the temporalio/cli release (a single pure-Go binary bundling the
   # dev server + SQLite + Web UI), cross-compiled per triple. Tags are "vX.Y.Z".
   temporal:
     ref: "v{v}"
     # The temporal module's engine major is two-part ("1.1"), so the index
-    # keys versions by the first two dot-parts.
+    # keys versions by the first two dot-parts. Every stable CLI release from
+    # 1.0.0 (pre-1.0 is skipped; RCs excluded).
     major_parts: 2
-    versions: ["1.1.0"]
+    versions: [
+      "1.0.0", "1.1.0", "1.1.1", "1.1.2", "1.2.0", "1.3.0", "1.4.0", "1.4.1",
+      "1.5.0", "1.5.1", "1.6.0", "1.6.1", "1.6.2", "1.7.0", "1.7.1", "1.7.2",
+      "1.7.3", "1.8.0",
+    ]
