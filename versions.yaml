@@ -26,17 +26,59 @@ triples:
 engines:
   # Postgres uses its real upstream version (two-part, e.g. 16.14); the archive
   # is named 16.14.0 and built from the REL_16_14 branch.
+  # Full back-catalog of the supported majors (14-18). The index's major->newest
+  # map is recomputed over the union on every publish, so a bare `version = 16`
+  # keeps resolving to the newest 16.x no matter how many older minors exist;
+  # the older minors serve exact pins (`version = "16.9"`). The earliest minors
+  # may fail to build on today's runners (e.g. pre-OpenSSL-3 sources); that's
+  # fine — the release is append-only and publishes whatever does build.
   postgres:
     ref: "REL_{v_}"
     archive_suffix: ".0"
     archive_name: postgresql
-    versions: ["14.23", "15.18", "16.14", "17.10", "18.4"]
+    versions: [
+      "14.0", "14.1", "14.2", "14.3", "14.4", "14.5", "14.6", "14.7", "14.8",
+      "14.9", "14.10", "14.11", "14.12", "14.13", "14.14", "14.15", "14.16",
+      "14.17", "14.18", "14.19", "14.20", "14.21", "14.22", "14.23",
+      "15.0", "15.1", "15.2", "15.3", "15.4", "15.5", "15.6", "15.7", "15.8",
+      "15.9", "15.10", "15.11", "15.12", "15.13", "15.14", "15.15", "15.16",
+      "15.17", "15.18",
+      "16.0", "16.1", "16.2", "16.3", "16.4", "16.5", "16.6", "16.7", "16.8",
+      "16.9", "16.10", "16.11", "16.12", "16.13", "16.14",
+      "17.0", "17.1", "17.2", "17.3", "17.4", "17.5", "17.6", "17.7", "17.8",
+      "17.9", "17.10",
+      "18.0", "18.1", "18.2", "18.3", "18.4",
+    ]
+  # Valkey's own release lines (8.0 onward; the 7.2 line is the pre-fork
+  # compatibility train and is omitted). Majors are keyed one-part, so
+  # `version = 8` -> newest 8.x; older patches serve exact pins.
   valkey:
     ref: "{v}"
-    versions: ["8.1.8", "9.1.0"]
+    versions: [
+      "8.0.0", "8.0.1", "8.0.2", "8.0.3", "8.0.4", "8.0.5", "8.0.6", "8.0.7",
+      "8.0.8", "8.0.9",
+      "8.1.0", "8.1.1", "8.1.2", "8.1.3", "8.1.4", "8.1.5", "8.1.6", "8.1.7",
+      "8.1.8",
+      "9.0.0", "9.0.1", "9.0.2", "9.0.3", "9.0.4",
+      "9.1.0",
+    ]
+  # Every stable 2.x release (RCs excluded; upstream skipped no minor except
+  # patch releases, which exist only where listed). The oldest (2.0-2.3 era,
+  # 2021-2022) may no longer compile on current runners — append-only, so
+  # whatever builds is published and the rest simply stays absent.
   kvrocks:
     ref: "v{v}"
-    versions: ["2.15.0"]
+    versions: [
+      "2.0.0", "2.0.1", "2.0.2", "2.0.3", "2.0.4", "2.0.5", "2.0.6",
+      "2.1.0", "2.2.0", "2.3.0", "2.4.0", "2.5.0", "2.5.1", "2.6.0", "2.7.0",
+      "2.8.0", "2.9.0", "2.10.0", "2.10.1", "2.11.0", "2.11.1", "2.12.0",
+      "2.12.1", "2.13.0", "2.14.0", "2.15.0", "2.16.0",
+    ]
+  # FerretDB is deliberately NOT backfilled: each 2.x gateway requires a
+  # matching microsoft/documentdb extension release (the ferret module pins one
+  # documentdb version), so older gateways against the current backend would be
+  # rejected at startup. Backfilling needs a gateway->documentdb pairing table
+  # in the ferret module plus the paired documentdb versions here.
   ferretdb:
     ref: "v{v}"
     versions: ["2.7.0"]

@@ -59,6 +59,10 @@ jobs:
     runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
+      # One build at a time per engine. Engines still run independently (there
+      # are only a handful), but within an engine a large catalog backfill
+      # queues politely instead of grabbing every hosted runner at once.
+      max-parallel: 1
       matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
     steps:
       - uses: actions/checkout@v5
