@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 
 	"gopkg.in/yaml.v3"
@@ -150,19 +151,34 @@ func sha256File(path string) (string, error) {
 	return hex.EncodeToString(h.Sum(nil)), nil
 }
 
-// versionLess reports whether dotted-numeric a < b.
+// versionLess reports whether version a < b. Segments split on both "." and
+// "-" and compare numerically — the dash matters: documentdb versions are
+// "0.112-0"-shaped, and a dot-only split would read "112-0" and "112-1" as the
+// same number, leaving the major→newest map to map iteration order. Non-numeric
+// segments (and a missing vs present segment) fall back to string comparison.
 func versionLess(a, b string) bool {
-	as, bs := strings.Split(a, "."), strings.Split(b, ".")
+	seg := func(s string) []string {
+		return strings.FieldsFunc(s, func(r rune) bool { return r == '.' || r == '-' })
+	}
+	as, bs := seg(a), seg(b)
 	for i := 0; i < len(as) || i < len(bs); i++ {
-		var ai, bi int
+		var av, bv string
 		if i < len(as) {
-			fmt.Sscanf(as[i], "%d", &ai)
+			av = as[i]
 		}
 		if i < len(bs) {
-			fmt.Sscanf(bs[i], "%d", &bi)
+			bv = bs[i]
 		}
-		if ai != bi {
-			return ai < bi
+		ai, aerr := strconv.Atoi(av)
+		bi, berr := strconv.Atoi(bv)
+		if aerr == nil && berr == nil {
+			if ai != bi {
+				return ai < bi
+			}
+			continue
+		}
+		if av != bv {
+			return av < bv
 		}
 	}
 	return false

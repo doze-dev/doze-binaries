@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"strings"
+	"time"
 
 	"gopkg.in/yaml.v3"
 )
@@ -60,6 +61,16 @@ func runPlan(args []string) error {
 				})
 			}
 		}
+	}
+
+	// GitHub hard-caps a job matrix at 256 entries and FAILS SILENTLY past it
+	// (the workflow just doesn't expand). A full-catalog backfill gets close
+	// (postgres: 74 versions x 3 triples = 222), so refuse loudly instead of
+	// letting a catalog addition wedge the release: stage the new versions
+	// across two pushes (the first publish shrinks the second plan).
+	const matrixCap = 256
+	if len(include) > matrixCap {
+		return fmt.Errorf("plan has %d jobs, over GitHub's %d-per-matrix limit — stage the catalog additions across smaller pushes", len(include), matrixCap)
 	}
 
 	out, err := json.Marshal(struct {
@@ -138,15 +149,16 @@ func publishedArtifacts(engine string) (map[string]bool, error) {
 		return set, nil // not published yet (in any format)
 	}
 
-	var idx struct {
-		Engines map[string]struct {
-			Artifacts map[string]map[string]yaml.Node `yaml:"artifacts"`
-		} `yaml:"engines"`
-	}
+	// Reuse the manifest schema from manifest.go — a second declaration of the
+	// index shape here could silently drift from the one the publisher writes.
+	var idx manifest
 	if err := yaml.Unmarshal(body, &idx); err != nil {
 		return nil, fmt.Errorf("parsing published manifest: %w", err)
 	}
 	for engine, e := range idx.Engines {
+		if e == nil {
+			continue
+		}
 		for full, triples := range e.Artifacts {
 			for triple := range triples {
 				set[key(engine, full, triple)] = true
@@ -156,11 +168,15 @@ func publishedArtifacts(engine string) (map[string]bool, error) {
 	return set, nil
 }
 
+// indexHTTP bounds the published-manifest fetch — without it a hung GitHub
+// response stalls the plan job until the job-level timeout.
+var indexHTTP = &http.Client{Timeout: 60 * time.Second}
+
 // fetchIndex reads a manifest from an http(s) URL or a local path. found is
 // false (with nil error) when the manifest simply isn't there (404 / missing).
 func fetchIndex(loc string) (body []byte, found bool, err error) {
-	if strings.HasPrefix(loc, "http") {
-		resp, err := http.Get(loc)
+	if strings.HasPrefix(loc, "http://") || strings.HasPrefix(loc, "https://") {
+		resp, err := indexHTTP.Get(loc)
 		if err != nil {
 			return nil, false, fmt.Errorf("fetching published manifest %s: %w", loc, err)
 		}

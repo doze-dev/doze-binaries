@@ -19,7 +19,7 @@ import (
 
 func main() {
 	if len(os.Args) < 2 {
-		fatal("usage: dzb <plan|manifest|engines> [args]")
+		fatal("usage: dzb <plan|manifest|engines|latest> [args]")
 	}
 	var err error
 	switch os.Args[1] {

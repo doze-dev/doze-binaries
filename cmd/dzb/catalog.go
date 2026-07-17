@@ -14,6 +14,9 @@ import (
 // release workflow's build matrix is derived from the catalog rather than a
 // hardcoded list — adding an engine is one versions.yaml entry plus a recipe.
 func runEngines(args []string) error {
+	if len(args) != 0 {
+		return fmt.Errorf("usage: dzb engines")
+	}
 	cfg, err := loadConfig()
 	if err != nil {
 		return err
