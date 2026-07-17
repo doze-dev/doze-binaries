@@ -32,6 +32,11 @@ case "$triple" in
     ;;
 esac
 
+# Older kvrocks (≤2.2-era) vendors a googletest whose cmake_minimum_required
+# predates 3.5, which CMake 4.x (Homebrew on the macOS runners) refuses to
+# configure. This env var relaxes that floor; CMake <4 ignores it entirely.
+export CMAKE_POLICY_VERSION_MINIMUM=3.5
+
 ./x.py build -j"$(getconf _NPROCESSORS_ONLN)"
 
 mkdir -p "$prefix/bin"
