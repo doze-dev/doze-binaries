@@ -45,13 +45,20 @@ check_relocation() {
   case "$(uname -s)" in
     Darwin)
       while IFS= read -r lib; do
+        # A dylib's own LC_ID_DYLIB (its install name, the first otool -L entry)
+        # is not a dependency: the runtime loader never consults it, it only
+        # matters to someone LINKING against the shipped lib. First-party libs
+        # (e.g. postgres's libpq) keep their build-prefix ID, so skip it —
+        # only actual load-path references decide relocatability.
+        id="$(otool -D "$lib" 2>/dev/null | tail -n +2 | head -n 1)"
         while IFS= read -r ref; do
+          [ "$ref" = "$id" ] && continue
           case "$ref" in
             /usr/lib/*|/System/*|@loader_path/*|@rpath/*|@executable_path/*) ;;
             /*) echo "  RELOC FAIL: $(basename "$lib") -> $ref"; bad=1 ;;
           esac
         done < <(otool -L "$lib" 2>/dev/null | tail -n +2 | awk '{print $1}')
-      done < <(find "$root/lib" -name '*.dylib' 2>/dev/null)
+      done < <(find "$root/lib" -name '*.dylib' -type f 2>/dev/null)
       ;;
     Linux)
       while IFS= read -r lib; do
@@ -67,29 +74,110 @@ check_relocation() {
   echo "  smoke: relocation check ok"
 }
 
+# Every engine gets the relocation gate: any bundled lib that still references a
+# path outside the package is a bug regardless of engine (find is a no-op for
+# engines that bundle no libs, e.g. the pure-Go ones).
+check_relocation "$dir"
+
 case "$engine" in
   postgres)
     run "$dir/bin/postgres" --version
     run "$dir/bin/initdb" --version
-    data="$work/pgdata"
+    data="$work/pgdata"; sock="$work/sock"; mkdir -p "$sock"
     # A real initdb loads libicu* and writes a cluster — the exact path that the
     # broken ICU bundling aborted on. Default locale provider is fine; the dylib
     # graph is loaded at exec regardless of provider.
     run "$dir/bin/initdb" -D "$data" -U postgres --no-sync -E UTF8 --locale=C
+    # Then BOOT the server and exercise what the archive actually ships. The
+    # archive carries all of contrib as separate extension .so files, and initdb
+    # alone never loads them — a bad rpath in pgcrypto.so would pass a
+    # version+initdb smoke and explode on the user's first CREATE EXTENSION.
+    cat >> "$data/postgresql.conf" <<EOF
+listen_addresses = ''
+unix_socket_directories = '$sock'
+shared_preload_libraries = 'pg_stat_statements'
+EOF
+    "$dir/bin/pg_ctl" -D "$data" -l "$work/pg.log" -w start >/dev/null \
+      || { echo "smoke: postgres failed to start"; cat "$work/pg.log"; exit 1; }
+    trap '"$dir/bin/pg_ctl" -D "$data" stop -m immediate >/dev/null 2>&1 || true; rm -rf "$work"' EXIT
+    pq() { "$dir/bin/psql" -h "$sock" -U postgres -d "$1" -v ON_ERROR_STOP=1 -tAc "$2"; }
+    # Roles / databases / schemas / tables: the operations every doze module
+    # performs on first provision.
+    pq postgres "CREATE ROLE app LOGIN PASSWORD 'smoke'" >/dev/null
+    pq postgres "CREATE DATABASE app OWNER app" >/dev/null
+    pq app "CREATE SCHEMA payments AUTHORIZATION app" >/dev/null
+    pq app "CREATE TABLE payments.t (id int PRIMARY KEY, note text)" >/dev/null
+    pq app "INSERT INTO payments.t VALUES (1, 'ok')" >/dev/null
+    got="$(pq app 'SELECT note FROM payments.t')"
+    [ "$got" = "ok" ] || { echo "smoke: query returned '$got', want ok"; exit 1; }
+    # ICU at runtime (initdb only proves it at cluster-creation time).
+    pq app "SELECT 'a' < 'B' COLLATE \"en-x-icu\"" >/dev/null
+    # CREATE EXTENSION for everything the archive ships — iterate the archive's
+    # own control files (not a hardcoded list) so the sweep stays correct across
+    # majors with different contrib sets. CASCADE pulls in dependencies
+    # (earthdistance -> cube); pg_stat_statements needs the preload set above.
+    extdir=""
+    for d in "$dir/share/postgresql/extension" "$dir/share/extension"; do
+      [ -d "$d" ] && { extdir="$d"; break; }
+    done
+    [ -n "$extdir" ] || { echo "smoke: no extension dir in archive"; exit 1; }
+    n=0
+    for ctl in "$extdir"/*.control; do
+      ext="$(basename "$ctl" .control)"
+      pq app "CREATE EXTENSION IF NOT EXISTS \"$ext\" CASCADE" >/dev/null \
+        || { echo "smoke: CREATE EXTENSION $ext failed"; exit 1; }
+      n=$((n+1))
+    done
+    # The preloaded module must actually be live, not just created.
+    pq app "SELECT count(*) >= 0 FROM pg_stat_statements" >/dev/null
+    "$dir/bin/pg_ctl" -D "$data" stop -m immediate >/dev/null 2>&1 || true
+    echo "  smoke: boot + role/db/schema/query + ICU + $n extensions ok"
     ;;
   valkey)
     run "$dir/bin/valkey-server" --version
+    # Boot on a unix socket and prove serving works, not just process load.
+    "$dir/bin/valkey-server" --port 0 --unixsocket "$work/vk.sock" \
+      --dir "$work" --save '' >"$work/vk.log" 2>&1 &
+    vpid=$!
+    ready=0
+    for _ in $(seq 1 30); do
+      if "$dir/bin/valkey-cli" -s "$work/vk.sock" ping >/dev/null 2>&1; then ready=1; break; fi
+      sleep 1
+    done
+    [ "$ready" = 1 ] || { echo "smoke: valkey never became ready"; cat "$work/vk.log"; kill "$vpid" 2>/dev/null; exit 1; }
+    "$dir/bin/valkey-cli" -s "$work/vk.sock" set smoke ok >/dev/null
+    got="$("$dir/bin/valkey-cli" -s "$work/vk.sock" get smoke)"
+    kill "$vpid" 2>/dev/null || true
+    [ "$got" = "ok" ] || { echo "smoke: valkey GET returned '$got', want ok"; exit 1; }
+    echo "  smoke: valkey boot + set/get ok"
     ;;
   kvrocks)
     run "$dir/bin/kvrocks" --version
+    # Boot with a minimal config (keys stable across 2.x) and speak raw RESP over
+    # /dev/tcp — the archive ships no client binary.
+    kvport=17666
+    printf 'port %s\ndir %s\n' "$kvport" "$work/kvdata" > "$work/kv.conf"
+    mkdir -p "$work/kvdata"
+    "$dir/bin/kvrocks" -c "$work/kv.conf" >"$work/kv.log" 2>&1 &
+    kpid=$!
+    ready=0
+    for _ in $(seq 1 30); do
+      if reply="$(exec 2>/dev/null 3<>"/dev/tcp/127.0.0.1/$kvport" \
+            && printf '*1\r\n$4\r\nPING\r\n' >&3 && head -c 5 <&3 && exec 3>&- 3<&-)" \
+         && [ "$reply" = "+PONG" ]; then ready=1; break; fi
+      sleep 1
+    done
+    kill "$kpid" 2>/dev/null || true
+    [ "$ready" = 1 ] || { echo "smoke: kvrocks never answered PING"; cat "$work/kv.log"; exit 1; }
+    echo "  smoke: kvrocks boot + RESP ping ok"
     ;;
   ferretdb)
+    # Standalone the gateway can only prove process load — it needs the paired
+    # documentdb backend for real operations, which the ferret module's
+    # acceptance tests (and the documentdb arm below) cover.
     run "$dir/bin/ferretdb" --version
     ;;
   documentdb)
-    # First prove every bundled lib is self-contained (catches the build-tmp libpq
-    # / unbundled geos relocation bug that a same-machine runtime test misses).
-    check_relocation "$dir"
     # Stand up the relocated Postgres, load the extension, and do a real
     # documentdb_api insert/count — the whole point of this artifact.
     data="$work/data"; sock="$work/sock"; mkdir -p "$sock"
@@ -121,7 +209,6 @@ EOF
   mariadb)
     # Prove the server + tools load from the relocated path, init the system
     # tables, then actually BOOT mariadbd and run a query end to end.
-    check_relocation "$dir"
     run "$dir/bin/mariadbd" --version
     run "$dir/bin/mariadb" --version
     data="$work/data"; sock="$work/my.sock"

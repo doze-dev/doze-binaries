@@ -1,0 +1,99 @@
+# Re-verify every PUBLISHED artifact against the current smoke gate. Published
+# archives are immutable, so this never rebuilds or republishes anything — it
+# downloads each artifact from its rolling release, checks its sha256 against
+# the index, and runs scripts/smoke.sh on a runner matching the triple.
+#
+# Why it exists: the build-time smoke only gates artifacts at publish time, with
+# whatever depth the gate had THEN. This sweep applies today's (deeper) gate to
+# the whole back-catalog, and catches environment drift — an artifact that
+# passed on last year's runner image but no longer runs on current macOS/glibc.
+name: verify
+
+on:
+  schedule:
+    - cron: "0 6 * * 1" # weekly, Monday 06:00 UTC
+  workflow_dispatch:
+    inputs:
+      engines:
+        description: >-
+          Engines to verify (space- or comma-separated, e.g. "postgres kvrocks").
+          Empty = all engines in versions.yaml.
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+
+jobs:
+  # One verify job per (engine, triple), derived from versions.yaml like the
+  # release workflow derives its engine list — no hardcoded matrix.
+  plan:
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.plan.outputs.matrix }}
+    steps:
+      - uses: actions/checkout@v5
+      - id: plan
+        run: |
+          ruby -ryaml -rjson -e 'puts JSON.dump(YAML.load_file("versions.yaml"))' > cfg.json
+          matrix="$(jq -c --arg sel "${{ inputs.engines }}" '
+            .triples as $T |
+            [ .engines | to_entries[] | .key as $e |
+              select($sel == "" or (($sel | gsub(","; " ") | split(" ") | map(select(length > 0))) | index($e) != null)) |
+              ((.value.triples // ($T | keys)))[] as $t |
+              {engine: $e, triple: $t, runner: $T[$t]} ]
+            | {include: .}' cfg.json)"
+          echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
+
+  verify:
+    needs: plan
+    name: ${{ matrix.engine }} (${{ matrix.triple }})
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      # Downloads + smokes, no compilation — still capped to stay polite.
+      max-parallel: 4
+      matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
+    steps:
+      - uses: actions/checkout@v5
+      - name: Verify every published ${{ matrix.engine }} artifact (${{ matrix.triple }})
+        run: |
+          set -uo pipefail
+          engine="${{ matrix.engine }}"; triple="${{ matrix.triple }}"
+          base="https://github.com/${{ github.repository }}/releases/download/$engine"
+          curl -fsSL "$base/index.yaml" -o index.yaml \
+            || { echo "no published index for $engine — nothing to verify"; exit 0; }
+          ruby -ryaml -rjson -e 'puts JSON.dump(YAML.load_file("index.yaml"))' > index.json
+          jq -r --arg e "$engine" --arg t "$triple" \
+            '.engines[$e].artifacts | to_entries[] | select(.value[$t] != null) |
+             [.key, .value[$t].url, .value[$t].sha256] | @tsv' index.json > artifacts.tsv
+          chmod +x scripts/*.sh
+          total=0; failed=0
+          echo "## verify: $engine ($triple)" >> "$GITHUB_STEP_SUMMARY"
+          echo "| version | result |" >> "$GITHUB_STEP_SUMMARY"
+          echo "|---|---|" >> "$GITHUB_STEP_SUMMARY"
+          while IFS=$'\t' read -r -u9 ver url sha; do
+            total=$((total + 1))
+            note="ok"
+            if ! curl -fsSL "$url" -o artifact.tar.gz </dev/null; then
+              note="download failed"
+            elif [ "$(shasum -a 256 artifact.tar.gz | awk '{print $1}')" != "$sha" ]; then
+              note="sha256 mismatch"
+            elif ! scripts/smoke.sh "$engine" artifact.tar.gz "$triple" >smoke.log 2>&1; then
+              note="smoke failed"
+              echo "::error::$engine $ver ($triple) failed smoke"
+              tail -40 smoke.log
+            fi
+            if [ "$note" = "ok" ]; then
+              echo "  ok  $ver"
+            else
+              failed=$((failed + 1))
+              echo "FAIL  $ver — $note"
+            fi
+            echo "| $ver | $note |" >> "$GITHUB_STEP_SUMMARY"
+            rm -f artifact.tar.gz
+          done 9< artifacts.tsv
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "**$((total - failed))/$total ok**" >> "$GITHUB_STEP_SUMMARY"
+          echo "verified $total artifacts, $failed failed"
+          [ "$failed" = 0 ]
