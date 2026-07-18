@@ -25,7 +25,10 @@ esac
 export CGO_ENABLED=0
 
 src="$(mktemp -d)/src"
-git clone --depth 1 --branch "$ref" "$repo" "$src"
+# Skip LFS smudge: FerretDB stores website/blog images in git-lfs, and
+# upstream's LFS budget being exhausted fails the whole checkout over assets a
+# `go build` never touches. Pointer files land instead of blobs, which is fine.
+GIT_LFS_SKIP_SMUDGE=1 git clone --depth 1 --branch "$ref" "$repo" "$src"
 cd "$src"
 # -mod=readonly (the default) enforces the repo's go.mod/go.sum as-is.
 if [ -n "$ldflags" ]; then
