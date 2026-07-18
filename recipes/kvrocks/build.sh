@@ -42,7 +42,12 @@ esac
 # configure. This env var relaxes that floor; CMake <4 ignores it entirely.
 export CMAKE_POLICY_VERSION_MINIMUM=3.5
 
-./x.py build -j"$(getconf _NPROCESSORS_ONLN)"
+# PORTABLE=1 turns off arch-specific optimizations (RocksDB's default is
+# effectively -march=native): a binary built on a newer-CPU runner otherwise
+# dies with SIGILL on older machines — the verify sweep caught exactly that on
+# several x86_64 artifacts. (kvrocks ≤2.3 doesn't forward the flag to its
+# RocksDB subbuild; for those it is accepted but inert.)
+./x.py build -j"$(getconf _NPROCESSORS_ONLN)" -D PORTABLE=1
 
 mkdir -p "$prefix/bin"
 cp build/kvrocks "$prefix/bin/"

@@ -27,7 +27,9 @@ case "$triple" in
 esac
 
 work="$(mktemp -d)"
-trap 'rm -rf "$work"' EXIT
+# chmod first: some engines leave read-only files behind (a verify sweep run
+# once died on `rm: Permission denied` cleaning a prior artifact's tree).
+trap 'chmod -R u+w "$work" 2>/dev/null || true; rm -rf "$work"' EXIT
 tar -C "$work" -xzf "$tarball"
 dir="$(find "$work" -maxdepth 1 -mindepth 1 -type d | head -n1)"
 [ -n "$dir" ] && [ -d "$dir/bin" ] || { echo "smoke: no bin/ in $tarball" >&2; exit 1; }
@@ -58,7 +60,7 @@ check_relocation() {
             /*) echo "  RELOC FAIL: $(basename "$lib") -> $ref"; bad=1 ;;
           esac
         done < <(otool -L "$lib" 2>/dev/null | tail -n +2 | awk '{print $1}')
-      done < <(find "$root/lib" -name '*.dylib' -type f 2>/dev/null)
+      done < <(find "$root/lib" \( -name '*.dylib' -o -name '*.so' \) -type f 2>/dev/null)
       ;;
     Linux)
       while IFS= read -r lib; do
@@ -99,7 +101,7 @@ shared_preload_libraries = 'pg_stat_statements'
 EOF
     "$dir/bin/pg_ctl" -D "$data" -l "$work/pg.log" -w start >/dev/null \
       || { echo "smoke: postgres failed to start"; cat "$work/pg.log"; exit 1; }
-    trap '"$dir/bin/pg_ctl" -D "$data" stop -m immediate >/dev/null 2>&1 || true; rm -rf "$work"' EXIT
+    trap '"$dir/bin/pg_ctl" -D "$data" stop -m immediate >/dev/null 2>&1 || true; chmod -R u+w "$work" 2>/dev/null || true; rm -rf "$work"' EXIT
     pq() { "$dir/bin/psql" -h "$sock" -U postgres -d "$1" -v ON_ERROR_STOP=1 -tAc "$2"; }
     # Roles / databases / schemas / tables: the operations every doze module
     # performs on first provision.

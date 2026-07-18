@@ -130,9 +130,11 @@ bundle() {
   echo "$name"
 }
 
-# Roots: every Mach-O in bin/ and every real (non-symlink) dylib anywhere under
-# lib/ — including the extension modules in lib/postgresql/, whose build-time
-# references to libpq and to sibling documentdb libs must be relocated too.
+# Roots: every Mach-O in bin/ and every real (non-symlink) dylib OR .so bundle
+# anywhere under lib/ — postgres extension modules are .so Mach-O bundles
+# (dblink.so, postgres_fdw.so, …) whose build-time references to libpq must be
+# relocated too. A dylib-only walk here shipped 14.x/15.x extensions with an
+# absolute build-tmp libpq path that only the deep smoke finally caught.
 while IFS= read -r b; do rewrite "$b"; done < <(find "$INSTALL_DIR/bin" -type f 2>/dev/null)
 while IFS= read -r l; do
   [ -L "$l" ] && continue
@@ -141,8 +143,9 @@ while IFS= read -r l; do
   # already rewritten to a @loader_path path, so the id is otherwise unused — but
   # leaving the build-tmp path in it ships a dangling absolute path and trips the
   # smoke relocation check. @rpath/<name> is the conventional relocatable id.
+  # (.so bundles carry no id; install_name_tool errors and the || true skips.)
   install_name_tool -id "@rpath/$(basename "$l")" "$l" 2>/dev/null || true
-done < <(find "$INSTALL_DIR/lib" -name "*.dylib" 2>/dev/null)
+done < <(find "$INSTALL_DIR/lib" \( -name "*.dylib" -o -name "*.so" \) 2>/dev/null)
 
 # Ad-hoc sign everything we touched (required on Apple Silicon).
 find "$INSTALL_DIR/bin" "$INSTALL_DIR/lib" -type f -print0 2>/dev/null | while IFS= read -r -d '' f; do
