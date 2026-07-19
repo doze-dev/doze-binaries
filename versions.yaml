@@ -105,10 +105,10 @@ engines:
   mariadb:
     ref: "mariadb-{v}"
     major_parts: 2
-    # Upstream publishes generic binary tarballs for x86_64 Linux ONLY (verified
-    # against archive.mariadb.org across 11.4–12.x) — the other triples need a
-    # source-build recipe arm before they can ship.
-    triples: [x86_64-unknown-linux-gnu]
+    # x86_64 Linux repackages upstream's generic bintar (the only platform
+    # MariaDB publishes one for — verified against archive.mariadb.org across
+    # 11.4–12.x); the other triples build from source (see the recipe's source
+    # arm), postgres-style. All three target triples ship.
     versions: [
       "11.4.2", "11.4.3", "11.4.4", "11.4.5", "11.4.6", "11.4.7", "11.4.8",
       "11.4.9", "11.4.10", "11.4.11", "11.4.12",
