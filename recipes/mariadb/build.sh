@@ -101,6 +101,11 @@ case "$triple" in
         # macOS ships bison 2.3; MariaDB's grammar needs 3.x.
         export PATH="$(brew --prefix bison)/bin:$PATH"
         export OPENSSL_ROOT_DIR="$(brew --prefix openssl@3)"
+        # CI runners resolve the default sysroot badly for this build: libc++
+        # headers end up shadowed by C headers ("<cstdint> didn't find libc++'s
+        # <stdint.h>", nullptr_t undeclared). Pin the SDK explicitly.
+        export SDKROOT="$(xcrun --show-sdk-path)"
+        export CMAKE_OSX_SYSROOT="$SDKROOT"
         ;;
     esac
 
