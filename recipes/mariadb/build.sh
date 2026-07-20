@@ -69,10 +69,15 @@ case "$triple" in
     # ── Repackage arm: the one triple upstream publishes a generic bintar for.
     sudo apt-get update -y
     # patchelf: the bundle step hard-requires it (and now fails loudly).
-    # libncurses5/libtinfo5: the older 11.4.x generic tarballs' client links
-    # libncurses.so.5, which modern hosts no longer ship — it must exist HERE
-    # so ldd resolves it and bundle-linux-deps copies it into lib/.
-    sudo apt-get install -y patchelf libncurses5 libtinfo5
+    sudo apt-get install -y patchelf
+    # libncurses5/libtinfo5: only the older 11.4.x generic tarballs' client
+    # links libncurses.so.5 — it must exist HERE so ldd resolves it and
+    # bundle-linux-deps copies it into lib/. Ubuntu dropped these compat
+    # packages in 24.04 (noble), where newer tarballs link .so.6 and don't need
+    # them; the release builds on 22.04 (where they exist) so best-effort is
+    # correct — the smoke gate boots mariadbd and catches a genuinely missing lib.
+    sudo apt-get install -y libncurses5 libtinfo5 || \
+      echo "note: libncurses5/libtinfo5 unavailable on this runner (fine unless building old 11.4.x)"
 
     plat="linux-systemd-x86_64"
     base="mariadb-${version}-${plat}"
@@ -109,6 +114,15 @@ case "$triple" in
         # the same class of problem; same incantation).
         export SDKROOT="$(xcrun --sdk macosx --show-sdk-path)"
         export CMAKE_OSX_SYSROOT="$SDKROOT"
+        # Even with the sysroot pinned, MariaDB's find_path calls (curses,
+        # zlib) locate headers inside the CommandLineTools SDK on CI images
+        # that have both toolchains, and inject that SDK's whole usr/include —
+        # shadowing libc++'s C stubs and failing every C++ TU. On CI, remove
+        # the CLT so no find can resolve into it (Xcode provides everything);
+        # never on a developer machine.
+        if [ -n "${CI:-}" ] && [ -d /Library/Developer/CommandLineTools ]; then
+          sudo rm -rf /Library/Developer/CommandLineTools
+        fi
         ;;
     esac
 
@@ -138,9 +152,14 @@ case "$triple" in
       -DWITH_UNIT_TESTS=OFF \
       -DWITH_EMBEDDED_SERVER=OFF \
       -DWITH_SAFEMALLOC=OFF \
+      -DWITH_ZLIB=bundled \
       -DPLUGIN_COLUMNSTORE=NO -DPLUGIN_ROCKSDB=NO -DPLUGIN_MROONGA=NO \
       -DPLUGIN_SPIDER=NO -DPLUGIN_SPHINX=NO -DPLUGIN_CONNECT=NO \
-      -DPLUGIN_OQGRAPH=NO -DPLUGIN_S3=NO
+      -DPLUGIN_OQGRAPH=NO -DPLUGIN_S3=NO \
+      $(if [ "${triple#*darwin}" != "$triple" ]; then
+          nc="$(brew --prefix ncurses)"
+          echo "-DCURSES_INCLUDE_PATH=$nc/include -DCURSES_LIBRARY=$nc/lib/libncurses.dylib"
+        fi)
 
     jobs="$(getconf _NPROCESSORS_ONLN)"
     make -j"$jobs"
