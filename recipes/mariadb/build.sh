@@ -69,10 +69,15 @@ case "$triple" in
     # ── Repackage arm: the one triple upstream publishes a generic bintar for.
     sudo apt-get update -y
     # patchelf: the bundle step hard-requires it (and now fails loudly).
-    # libncurses5/libtinfo5: the older 11.4.x generic tarballs' client links
-    # libncurses.so.5, which modern hosts no longer ship — it must exist HERE
-    # so ldd resolves it and bundle-linux-deps copies it into lib/.
-    sudo apt-get install -y patchelf libncurses5 libtinfo5
+    sudo apt-get install -y patchelf
+    # libncurses5/libtinfo5: only the older 11.4.x generic tarballs' client
+    # links libncurses.so.5 — it must exist HERE so ldd resolves it and
+    # bundle-linux-deps copies it into lib/. Ubuntu dropped these compat
+    # packages in 24.04 (noble), where newer tarballs link .so.6 and don't need
+    # them; the release builds on 22.04 (where they exist) so best-effort is
+    # correct — the smoke gate boots mariadbd and catches a genuinely missing lib.
+    sudo apt-get install -y libncurses5 libtinfo5 || \
+      echo "note: libncurses5/libtinfo5 unavailable on this runner (fine unless building old 11.4.x)"
 
     plat="linux-systemd-x86_64"
     base="mariadb-${version}-${plat}"
