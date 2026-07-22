@@ -58,10 +58,28 @@ curate() {
   done
   [ -d "$src/lib/plugin" ] && cp -R "$src/lib/plugin" "$prefix/lib/" || true
 
-  # Drop optional plugins that link system libraries doze never ships — they
-  # trip the relocation gate and serve no doze use case: OQGraph (libJudy),
-  # cracklib password strength (libcrack).
-  rm -f "$prefix/lib/plugin/ha_oqgraph.so" "$prefix/lib/plugin/cracklib_password_check.so"
+  # Drop plugins doze never uses. Two reasons, one list:
+  #  - relocation: OQGraph (libJudy) and cracklib (libcrack) link system libs
+  #    doze doesn't ship, tripping the relocation gate.
+  #  - size: the generic x86_64 bintar bundles the heavy storage/clustering
+  #    engines UNSTRIPPED — ha_rocksdb alone is ~193MB — which made the x86_64
+  #    tarball 268MB against ~16MB for the source-built triples (which never
+  #    compile these). This is the SAME set the source arm excludes with
+  #    -DPLUGIN_*=NO, so dropping them here makes every triple's tree match.
+  for p in ha_rocksdb ha_mroonga ha_connect ha_spider ha_sphinx ha_s3 \
+           ha_columnstore ha_oqgraph provider_snappy wsrep_info \
+           cracklib_password_check; do
+    rm -f "$prefix/lib/plugin/$p.so" "$prefix/lib/plugin/$p.dylib"
+  done
+}
+
+# strip_tree removes debug symbols in place. Only the x86_64 repackage arm needs
+# it (the generic bintar's mariadbd is unstripped, ~305MB); the source arms
+# already produce lean Release binaries, and stripping them would rewrite the
+# already-published — and correctly-sized — arm64/macOS artifacts for nothing.
+strip_tree() {
+  find "$prefix/bin" -maxdepth 1 -type f -exec strip --strip-unneeded {} + 2>/dev/null || true
+  find "$prefix/lib/plugin" -name '*.so' -exec strip --strip-unneeded {} + 2>/dev/null || true
 }
 
 case "$triple" in
@@ -90,6 +108,7 @@ case "$triple" in
     src="$(find "$work" -maxdepth 1 -mindepth 1 -type d | head -n1)"
     [ -n "$src" ] || { echo "no extracted dir from $base" >&2; exit 1; }
     curate "$src"
+    strip_tree
     ;;
 
   *)
