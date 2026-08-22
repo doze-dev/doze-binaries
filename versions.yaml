@@ -96,19 +96,21 @@ engines:
   documentdb:
     ref: "v{v}"
     versions: ["0.112-0"]
-  # MariaDB: generic binary tarballs repackaged per triple (see recipes/mariadb).
+  # MariaDB: built from upstream's source tarball per triple (see recipes/mariadb).
   # Upstream tags are "mariadb-<v>"; the version is used verbatim in the archive.
   # Every GA patch of the 11.4+ lines (each line's .0/.1 are preview/RC and are
-  # omitted; GA starts at .2). All 21 tarball URLs verified present upstream.
+  # omitted; GA starts at .2). All 21 source URLs verified present upstream.
   # Like temporal, MariaDB's meaningful selector is the release LINE, so majors
   # are keyed two-part: `version = "11.4"` -> newest 11.4.x.
   mariadb:
     ref: "mariadb-{v}"
     major_parts: 2
-    # x86_64 Linux repackages upstream's generic bintar (the only platform
-    # MariaDB publishes one for — verified against archive.mariadb.org across
-    # 11.4–12.x); the other triples build from source (see the recipe's source
-    # arm), postgres-style. All three target triples ship.
+    # Built from source on all three triples, postgres-style. x86_64 Linux used
+    # to repackage upstream's generic bintar instead (the only platform MariaDB
+    # publishes one for) — faster, but it is a DIFFERENT tree: no server-side
+    # auth_parsec/auth_mysql_sha2/sha256_password. Everything through 12.2.2 was
+    # published that way and is frozen; see scripts/parity-waivers.txt and the
+    # plugin table in README.md.
     versions: [
       "11.4.2", "11.4.3", "11.4.4", "11.4.5", "11.4.6", "11.4.7", "11.4.8",
       "11.4.9", "11.4.10", "11.4.11", "11.4.12",

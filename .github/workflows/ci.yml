@@ -4,6 +4,12 @@
 #   - smoke:   any engine whose recipe changed is built AND run (smoke.sh) on the
 #              native runner for both Linux and macOS — so a broken recipe, or a
 #              binary that doesn't actually work on Linux, is caught before merge.
+#   - parity:  the two trees smoke just built are diffed against each other, so a
+#              recipe that ships a different set of plugins per platform fails
+#              HERE. That is the check mariadb needed and didn't have: every
+#              release it ever cut shipped x86_64 and arm64 archives that
+#              disagreed about auth_parsec/auth_pam, because the recipe asserted
+#              they matched in a comment and nothing ever compared them.
 name: ci
 
 on:
@@ -82,3 +88,34 @@ jobs:
           recipes/${{ matrix.engine }}/build.sh "$version" "$ref" "$triple" dist
           # build.sh invokes scripts/smoke.sh, which RUNS the built binary from a
           # relocated path — the real "does it work on this OS" check.
+      - name: Record the built tree for the parity job
+        run: |
+          mkdir -p listings
+          for a in dist/*.tar.gz; do
+            tar tzf "$a" > "listings/$(basename "$a" .tar.gz).lst"
+          done
+      - uses: actions/upload-artifact@v6
+        with:
+          name: parity-listings-${{ matrix.engine }}-${{ matrix.os }}
+          path: listings/
+          if-no-files-found: error
+          retention-days: 1
+
+  # Diff the trees the smoke job just built across platforms. No waivers: these
+  # archives are minutes old and unpublished, so "the triples disagree" is a
+  # recipe bug with nothing immutable standing in the way of fixing it.
+  parity:
+    needs: smoke
+    if: ${{ !cancelled() && needs.smoke.result == 'success' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: parity-listings-*
+          path: listings
+          merge-multiple: true
+      - name: Every platform must ship the same tree
+        run: |
+          chmod +x scripts/*.sh
+          scripts/parity.sh listings

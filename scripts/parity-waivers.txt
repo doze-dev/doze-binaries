@@ -1,0 +1,38 @@
+# Artifacts whose triples are known NOT to ship the same tree.
+#
+# Published archives are immutable — consumers pin their checksums — so a
+# divergence that has already shipped can never be repaired, only declared. This
+# file is that declaration.
+#
+# It is read ONLY by the weekly verify sweep, which walks the published
+# back-catalog. The release-time gate in build-engine.yml (and the PR gate in
+# ci.yml) run scripts/parity.sh with no waivers at all: a tree built minutes ago
+# has no excuse for disagreeing with its siblings, so nothing in this file can
+# ever let a new divergence through.
+#
+# Format: <archive prefix> <version pattern>...   ( `#` starts a comment )
+#
+# ── mariadb: the two-arm era ────────────────────────────────────────────────
+# Until the recipe was unified, x86_64 Linux repackaged upstream's generic
+# bintar while every other triple built from source. The two trees are not the
+# same and never were:
+#
+#   x86_64 only : auth_gssapi, auth_pam, auth_pam_v1, auth_pam_tool_dir/,
+#                 hashicorp_key_management, provider_lzo, test_pam_modules/,
+#                 share/pam_user_map.so, share/user_map.conf, plus dead
+#                 share/ data for engines the drop list removes (mroonga,
+#                 groonga, CONNECT's JDBC/Mongo jars)
+#   aarch64 only: auth_parsec, auth_mysql_sha2, sha256_password
+#
+# Upstream's bintar genuinely lacks the three server-side auth plugins (it
+# ships only the CLIENT parsec.so — NOT interchangeable: loading it as a server
+# plugin fails with "Can't find symbol '_mysql_plugin_interface_version_'",
+# which reads like a corrupt plugin rather than a missing one). The aarch64 side
+# lacked PAM/GSSAPI/lzo/curl because the source arm never installed their -dev
+# packages, and MariaDB silently skips a plugin whose headers are absent.
+#
+# Both halves are fixed for versions built after the unification; these 21 are
+# frozen as they shipped. See the plugin table in README.md.
+mariadb 11.4.2 11.4.3 11.4.4 11.4.5 11.4.6 11.4.7 11.4.8 11.4.9 11.4.10 11.4.11 11.4.12
+mariadb 11.8.2 11.8.3 11.8.4 11.8.5 11.8.6 11.8.7 11.8.8
+mariadb 12.0.2 12.1.2 12.2.2

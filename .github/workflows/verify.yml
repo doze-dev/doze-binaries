@@ -7,6 +7,11 @@
 # whatever depth the gate had THEN. This sweep applies today's (deeper) gate to
 # the whole back-catalog, and catches environment drift — an artifact that
 # passed on last year's runner image but no longer runs on current macOS/glibc.
+#
+# It also feeds the cross-triple parity report. Each verify job already
+# downloads every artifact for its triple, so it records a `tar tzf` listing on
+# the way past; the final parity job diffs those listings across triples for
+# free, instead of pulling the whole back-catalog a second time.
 name: verify
 
 on:
@@ -68,6 +73,7 @@ jobs:
             '.engines[$e].artifacts | to_entries[] | select(.value[$t] != null) |
              [.key, .value[$t].url, .value[$t].sha256] | @tsv' index.json > artifacts.tsv
           chmod +x scripts/*.sh
+          mkdir -p listings
           total=0; failed=0
           echo "## verify: $engine ($triple)" >> "$GITHUB_STEP_SUMMARY"
           echo "| version | result |" >> "$GITHUB_STEP_SUMMARY"
@@ -84,6 +90,12 @@ jobs:
               echo "::error::$engine $ver ($triple) failed smoke"
               tail -40 smoke.log
             fi
+            # Record the tree for the parity job while the archive is in hand.
+            # Named after the ARCHIVE, not the engine, so the prefix matches what
+            # scripts/parity-waivers.txt refers to (postgres ships postgresql-*).
+            if [ "$note" = "ok" ] || [ "$note" = "smoke failed" ]; then
+              tar tzf artifact.tar.gz > "listings/$(basename "$url" .tar.gz).lst" 2>/dev/null || true
+            fi
             if [ "$note" = "ok" ]; then
               echo "  ok  $ver"
             else
@@ -97,3 +109,34 @@ jobs:
           echo "**$((total - failed))/$total ok**" >> "$GITHUB_STEP_SUMMARY"
           echo "verified $total artifacts, $failed failed"
           [ "$failed" = 0 ]
+      # Uploaded even when a smoke failed: a divergent tree is worth reporting
+      # regardless of whether some unrelated artifact also stopped booting.
+      - if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v6
+        with:
+          name: parity-listings-${{ matrix.engine }}-${{ matrix.triple }}
+          path: listings/
+          if-no-files-found: ignore
+          retention-days: 1
+
+  # Cross-triple parity over the WHOLE published catalog. The release-time gate
+  # in build-engine.yml can only see the artifacts one run produced; this is the
+  # sweep that sees every version at once, so a divergence that predates the gate
+  # (or slipped through when a sibling triple's build failed and left nothing to
+  # compare against) still gets named. Already-published divergences are declared
+  # in scripts/parity-waivers.txt; anything else fails.
+  parity:
+    needs: verify
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: parity-listings-*
+          path: listings
+          merge-multiple: true
+      - name: Diff each version's tree across triples
+        run: |
+          chmod +x scripts/*.sh
+          scripts/parity.sh listings scripts/parity-waivers.txt
