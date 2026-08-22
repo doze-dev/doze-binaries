@@ -11,6 +11,12 @@
 # ldflags, when given, is passed through — for upstreams that stamp their
 # version with -X in release builds (temporal), which an in-repo build of a
 # tag otherwise reports as a dev version.
+#
+# -s -w is always added: -w drops DWARF and -s drops the symbol table, which
+# together took temporal 1.8.0 from 193MB to roughly 140MB. Go tracebacks are
+# NOT affected — they are driven by .gopclntab, which neither flag removes, so
+# panics still print function names and line numbers. Only gdb/delve lose out,
+# and nobody debugs a shipped mirror binary.
 set -euo pipefail
 
 repo="$1"; ref="$2"; triple="$3"; pkg="$4"; out_bin="$5"; ldflags="${6:-}"
@@ -31,8 +37,4 @@ src="$(mktemp -d)/src"
 GIT_LFS_SKIP_SMUDGE=1 git clone --depth 1 --branch "$ref" "$repo" "$src"
 cd "$src"
 # -mod=readonly (the default) enforces the repo's go.mod/go.sum as-is.
-if [ -n "$ldflags" ]; then
-  go build -trimpath -ldflags "$ldflags" -o "$out_bin" "$pkg"
-else
-  go build -trimpath -o "$out_bin" "$pkg"
-fi
+go build -trimpath -ldflags "-s -w${ldflags:+ $ldflags}" -o "$out_bin" "$pkg"

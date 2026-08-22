@@ -20,9 +20,16 @@ prefix="$(mktemp -d)/temporal"; mkdir -p "$prefix/bin"
 # (see scripts/build-go-binary.sh for why fresh resolution is not an option).
 # The -X stamp mirrors upstream's release builds; without it an in-repo tag
 # build reports "0.0.0-DEV".
+#
+# BOTH package paths are stamped on purpose. Upstream moved the Version var from
+# temporalcli to internal/temporalcli at v1.6.0, and `go build -X` SILENTLY
+# ignores a symbol it cannot find — no warning, no error, no non-zero exit. So
+# stamping only the old path made every release from 1.6.0 on report
+# "0.0.0-DEV" while the build looked perfectly healthy. That same silence is
+# what makes passing both safe: whichever path this tag doesn't have is a no-op.
 "$root/scripts/build-go-binary.sh" https://github.com/temporalio/cli.git \
   "$ref" "$triple" ./cmd/temporal "$prefix/bin/temporal" \
-  "-X github.com/temporalio/cli/temporalcli.Version=$version"
+  "-X github.com/temporalio/cli/temporalcli.Version=$version -X github.com/temporalio/cli/internal/temporalcli.Version=$version"
 
 "$root/scripts/package.sh" "$prefix" "temporal-$version-$triple" "$out"
 "$root/scripts/smoke.sh" temporal "$out/temporal-$version-$triple.tar.gz" "$triple"

@@ -34,11 +34,22 @@ case "$triple" in
     # pkg-config is how configure locates ICU (icu-uc/icu-i18n). It's preinstalled
     # on CI's macOS runners but not necessarily on a dev machine — install it so a
     # local build finds ICU instead of failing `--with-icu`.
-    brew install pkg-config icu4c openssl@3 lz4 zstd libxml2 readline || true
+    # icu4c is PINNED to a versioned formula on purpose. PostgreSQL records the
+    # ICU collation version in the cluster, and ICU decides how text sorts, so an
+    # unpinned `brew install icu4c` means the same doze-pinned postgres version
+    # sorts differently depending on what Homebrew happened to resolve on build
+    # day. @78 is what every published macOS archive already links, so pinning
+    # changes nothing shipped — it just stops the drift.
+    #
+    # It does NOT close the gap with Linux, which is ICU 70 via ubuntu-22.04's
+    # libicu-dev. Homebrew's oldest versioned formula is icu4c@75, so matching 70
+    # exactly is impossible without building ICU from source on both platforms.
+    # The residual mac-vs-linux skew is documented in README.md.
+    brew install pkg-config icu4c@78 openssl@3 lz4 zstd libxml2 readline || true
     bp="$(brew --prefix)"
-    export PKG_CONFIG_PATH="$bp/opt/icu4c/lib/pkgconfig:$bp/opt/openssl@3/lib/pkgconfig:${PKG_CONFIG_PATH:-}"
-    export CPPFLAGS="-I$bp/opt/icu4c/include -I$bp/opt/openssl@3/include -I$bp/opt/readline/include ${CPPFLAGS:-}"
-    export LDFLAGS="-L$bp/opt/icu4c/lib -L$bp/opt/openssl@3/lib -L$bp/opt/readline/lib ${LDFLAGS:-}"
+    export PKG_CONFIG_PATH="$bp/opt/icu4c@78/lib/pkgconfig:$bp/opt/openssl@3/lib/pkgconfig:${PKG_CONFIG_PATH:-}"
+    export CPPFLAGS="-I$bp/opt/icu4c@78/include -I$bp/opt/openssl@3/include -I$bp/opt/readline/include ${CPPFLAGS:-}"
+    export LDFLAGS="-L$bp/opt/icu4c@78/lib -L$bp/opt/openssl@3/lib -L$bp/opt/readline/lib ${LDFLAGS:-}"
     ;;
 esac
 

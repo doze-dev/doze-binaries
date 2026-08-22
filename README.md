@@ -34,7 +34,11 @@ Intel macOS is not supported):
 > require a glibc at least as new as the build runner's (Ubuntu 22.04 → glibc
 > 2.35). All other non-system libraries are bundled and the rpath is rewritten to
 > `$ORIGIN/../lib`, so the trees are otherwise relocatable. macOS builds bundle
-> their Homebrew dylibs and are ad-hoc codesigned.
+> their Homebrew dylibs and are ad-hoc codesigned. Linux binaries are stripped
+> of debug info (`--strip-debug`, so `.symtab` survives and crash backtraces
+> still name functions) and the Go engines build with `-s -w`; upstream build
+> types vary and several default to shipping DWARF, which had made kvrocks
+> 513MB where 481MB of it was `.debug_*`.
 
 ## Layout
 
@@ -167,6 +171,36 @@ Bundled system libraries (the flat files in `lib/`) are excluded — those
 genuinely differ per OS, and smoke's relocation check already proves each one
 resolves.
 
+#### PostgreSQL sorts differently on macOS than on Linux
+
+The parity gate compares *which files* ship, and deliberately ignores the
+bundled system libraries in `lib/` — those legitimately differ per OS. That
+leaves one real cross-platform difference it cannot see:
+
+| | x86_64 Linux | aarch64 Linux | aarch64 macOS |
+|---|---|---|---|
+| bundled ICU | **70** | **70** | **78.3** |
+
+True for every major, 14 through 18. ICU decides how text sorts, so for the
+same doze-pinned postgres version:
+
+- `ORDER BY x COLLATE "en-x-icu"` can return a **different row order** on macOS
+  than on Linux.
+- Moving a data directory or physical backup between the two triggers
+  PostgreSQL's collation-version-mismatch warning, and indexes on ICU-collated
+  columns may be silently mis-sorted until `REINDEX`.
+
+Scope: doze provisions clusters with `--locale=C` under the **libc** provider,
+so ICU is not the default collation — this only bites if you explicitly use
+`*-x-icu` collations or an ICU-provider database.
+
+The macOS side is now pinned (`icu4c@78`, which is what every published archive
+already links) so it can no longer drift build-to-build. Closing the gap
+entirely is not possible through Homebrew — its oldest versioned formula is
+`icu4c@75` against Linux's 70 — and would mean building ICU from a pinned
+source tarball on both platforms. MariaDB is unaffected: it bundles no ICU on
+any triple and carries its own collation data.
+
 #### The MariaDB back-catalog ships different auth plugins per architecture
 
 **Permanent for the 21 versions listed in
@@ -201,6 +235,18 @@ than an absent one. The two files are not interchangeable.
 Every MariaDB version published after those builds from source on all three
 triples and carries the full set. If you need one of these plugins, move to a
 release that isn't in the waiver file.
+
+### The version gate
+
+Every archive must contain the version its **name** claims. `smoke.sh` derives
+the version from the archive filename and asserts the binary reports it.
+
+This is not theoretical bookkeeping: temporal 1.6.0 through 1.8.0 all shipped
+reporting `0.0.0-DEV`. The recipe stamped `-X <pkg>.Version=$version`, upstream
+moved that package to `internal/`, and `go build -X` ignores an unknown symbol
+in complete silence — no warning, no error, exit 0. The binaries built, booted,
+served traffic and lied about what they were. Every gate passed, because nothing
+compared the label to the contents.
 
 ### The smoke gate
 
