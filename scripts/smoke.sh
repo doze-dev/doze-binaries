@@ -36,17 +36,38 @@ dir="$(find "$work" -maxdepth 1 -mindepth 1 -type d | head -n1)"
 
 run() { echo "  smoke: $*"; "$@" >/dev/null; }
 
-# check_relocation fails if any bundled library still points OUTSIDE the package —
-# the failure mode the runtime test alone can miss, because the build prefix still
+# check_relocation fails if any shipped binary or library still points OUTSIDE the
+# package — the failure mode the runtime test alone can miss, because the build
+# prefix still
 # exists on the build machine, so an extension that recorded an absolute build-tmp
 # path to libpq/geos still loads HERE but breaks on a user's machine. This walks
 # every dylib/so (including the extension modules under lib/postgresql/) and
 # rejects any non-system, non-@loader_path/@rpath/$ORIGIN dependency.
+#
+# It walks bin/ AS WELL AS lib/. It used to walk lib/ only, which meant that for
+# every engine that bundles no libraries — valkey, kvrocks, temporal, ferretdb —
+# it inspected ZERO files and still printed "relocation check ok". A gate that
+# passes without looking at anything is worse than no gate, so the count of
+# files examined is now part of the output.
+#
+# lib/pgxs/src/test/ is deliberately EXEMPT. Those are upstream's regression
+# harness (pg_regress, isolationtester, pg_isolation_regress) — never executed by
+# doze, and every already-published macOS archive carries an absolute
+# /var/folders/.../libpq.5.dylib in them, because bundle-macos-deps.sh used to
+# filter lib/ by *.dylib/*.so and skipped plain executables. That bundler bug is
+# fixed, so new archives relocate them properly; the published ones are immutable
+# and cannot be. Exempting an inert path is the honest trade — the alternative is
+# a weekly job that is permanently red for something nothing runs, which teaches
+# everyone to ignore it.
+RELOC_EXEMPT='/lib/pgxs/src/test/'
 check_relocation() {
-  local root="$1" bad=0 lib ref
+  local root="$1" bad=0 lib ref n=0
   case "$(uname -s)" in
     Darwin)
       while IFS= read -r lib; do
+        case "$lib" in *"$RELOC_EXEMPT"*) continue ;; esac
+        file -b "$lib" 2>/dev/null | grep -q 'Mach-O' || continue
+        n=$((n + 1))
         # A dylib's own LC_ID_DYLIB (its install name, the first otool -L entry)
         # is not a dependency: the runtime loader never consults it, it only
         # matters to someone LINKING against the shipped lib. First-party libs
@@ -60,30 +81,87 @@ check_relocation() {
             /*) echo "  RELOC FAIL: $(basename "$lib") -> $ref"; bad=1 ;;
           esac
         done < <(otool -L "$lib" 2>/dev/null | tail -n +2 | awk '{print $1}')
-      done < <(find "$root/lib" \( -name '*.dylib' -o -name '*.so' \) -type f 2>/dev/null)
+      done < <(find "$root/bin" "$root/lib" -type f 2>/dev/null)
       ;;
     Linux)
       while IFS= read -r lib; do
+        case "$lib" in *"$RELOC_EXEMPT"*) continue ;; esac
+        file -b "$lib" 2>/dev/null | grep -q ELF || continue
+        n=$((n + 1))
         if ldd "$lib" 2>/dev/null | grep -q 'not found'; then
           echo "  RELOC FAIL: $(basename "$lib") has unresolved deps:"
           ldd "$lib" 2>/dev/null | grep 'not found'
           bad=1
         fi
-      done < <(find "$root/lib" -name '*.so*' -type f 2>/dev/null)
+      done < <(find "$root/bin" "$root/lib" -type f 2>/dev/null)
       ;;
   esac
-  [ "$bad" = 0 ] || { echo "smoke: relocation check failed — bundled libs reference paths outside the package"; exit 1; }
-  echo "  smoke: relocation check ok"
+  [ "$bad" = 0 ] || { echo "smoke: relocation check failed — shipped binaries reference paths outside the package"; exit 1; }
+  [ "$n" -gt 0 ] || { echo "smoke: relocation check inspected 0 files — the archive has no binaries?"; exit 1; }
+  echo "  smoke: relocation check ok ($n binaries/libraries inspected)"
 }
 
-# Every engine gets the relocation gate: any bundled lib that still references a
-# path outside the package is a bug regardless of engine (find is a no-op for
-# engines that bundle no libs, e.g. the pure-Go ones).
+# Every engine gets the relocation gate: anything shipped that still references a
+# path outside the package is a bug regardless of engine.
 check_relocation "$dir"
+
+# The version the ARCHIVE NAME claims: <prefix>-<version>-<triple>.tar.gz.
+archive_version="$(basename "$tarball" .tar.gz)"
+archive_version="${archive_version%-$triple}"
+archive_version="${archive_version#*-}"
+
+# check_version <expected> <cmd...>: fail unless the binary reports the version
+# its archive name promises.
+#
+# This exists because temporal shipped 1.6.0 through 1.8.0 all reporting
+# "0.0.0-DEV". The recipe passed `-X <pkg>.Version=$version` to stamp it, but
+# upstream had moved the package and `go build -X` ignores an unknown symbol in
+# total silence — no warning, no error, exit 0. Every gate we had passed: the
+# binary built, booted, served, and lied about what it was. Nothing compared the
+# name on the tin to the contents, so nothing could have caught it.
+# DZB_VERSION_WAIVERS names a file of already-published artifacts known to
+# misreport their version (see scripts/version-waivers.txt). Only the verify
+# sweep sets it; a build leaves it unset, so a newly built binary that lies
+# about itself always fails. A waived artifact is still checked and still prints
+# the mismatch — it just doesn't fail a sweep over immutable archives.
+version_waived() {
+  local f="${DZB_VERSION_WAIVERS:-}" line wp wv
+  [ -n "$f" ] && [ -f "$f" ] || return 1
+  while read -r line; do
+    line="${line%%#*}"
+    # shellcheck disable=SC2086
+    set -- $line
+    [ $# -ge 2 ] || continue
+    wp="$1"; shift
+    [ "$wp" = "$engine" ] || continue
+    for wv in "$@"; do
+      [ "$wv" = "$archive_version" ] && return 0
+    done
+  done < "$f"
+  return 1
+}
+
+check_version() {
+  local want="$1"; shift
+  local got
+  got="$("$@" 2>&1 | head -1)"
+  case "$got" in
+    *"$want"*) echo "  smoke: version ok ($want)"; return ;;
+  esac
+  if version_waived; then
+    echo "  smoke: version mismatch (KNOWN, waived) — archive claims '$want', binary reports: $got"
+    return
+  fi
+  echo "smoke: VERSION MISMATCH — archive claims '$want', binary reports: $got"
+  exit 1
+}
 
 case "$engine" in
   postgres)
     run "$dir/bin/postgres" --version
+    # Archives are <major>.<minor>.0 for doze's three-part scheme; postgres
+    # itself reports the upstream two-part version ("PostgreSQL 18.4").
+    check_version "${archive_version%.0}" "$dir/bin/postgres" --version
     run "$dir/bin/initdb" --version
     data="$work/pgdata"; sock="$work/sock"; mkdir -p "$sock"
     # A real initdb loads libicu* and writes a cluster — the exact path that the
@@ -137,6 +215,7 @@ EOF
     ;;
   valkey)
     run "$dir/bin/valkey-server" --version
+    check_version "$archive_version" "$dir/bin/valkey-server" --version
     # Boot on a unix socket and prove serving works, not just process load.
     "$dir/bin/valkey-server" --port 0 --unixsocket "$work/vk.sock" \
       --dir "$work" --save '' >"$work/vk.log" 2>&1 &
@@ -150,14 +229,16 @@ EOF
     "$dir/bin/valkey-cli" -s "$work/vk.sock" set smoke ok >/dev/null
     got="$("$dir/bin/valkey-cli" -s "$work/vk.sock" get smoke)"
     kill "$vpid" 2>/dev/null || true
+    wait "$vpid" 2>/dev/null || true
     [ "$got" = "ok" ] || { echo "smoke: valkey GET returned '$got', want ok"; exit 1; }
     echo "  smoke: valkey boot + set/get ok"
     ;;
   kvrocks)
     run "$dir/bin/kvrocks" --version
+    check_version "$archive_version" "$dir/bin/kvrocks" --version
     # Boot with a minimal config (keys stable across 2.x) and speak raw RESP over
     # /dev/tcp — the archive ships no client binary.
-    kvport=17666
+    kvport=$(( 20000 + ($$ % 20000) ))   # not a constant — see the temporal note below
     printf 'port %s\ndir %s\n' "$kvport" "$work/kvdata" > "$work/kv.conf"
     mkdir -p "$work/kvdata"
     "$dir/bin/kvrocks" -c "$work/kv.conf" >"$work/kv.log" 2>&1 &
@@ -170,6 +251,7 @@ EOF
       sleep 1
     done
     kill "$kpid" 2>/dev/null || true
+    wait "$kpid" 2>/dev/null || true
     [ "$ready" = 1 ] || { echo "smoke: kvrocks never answered PING"; cat "$work/kv.log"; exit 1; }
     echo "  smoke: kvrocks boot + RESP ping ok"
     ;;
@@ -178,6 +260,7 @@ EOF
     # documentdb backend for real operations, which the ferret module's
     # acceptance tests (and the documentdb arm below) cover.
     run "$dir/bin/ferretdb" --version
+    check_version "$archive_version" "$dir/bin/ferretdb" --version
     ;;
   documentdb)
     # Stand up the relocated Postgres, load the extension, and do a real
@@ -213,6 +296,7 @@ EOF
     # tables, then actually BOOT mariadbd and run a query end to end.
     run "$dir/bin/mariadbd" --version
     run "$dir/bin/mariadb" --version
+    check_version "$archive_version" "$dir/bin/mariadbd" --version
     data="$work/data"; sock="$work/my.sock"
     run "$dir/bin/mariadb-install-db" --no-defaults --datadir="$data" \
       --auth-root-authentication-method=normal --skip-test-db
@@ -231,20 +315,34 @@ EOF
     echo "  smoke: mariadbd boot + query ok"
     ;;
   temporal)
+    # The check that would have caught 1.6.0-1.8.0 shipping as 0.0.0-DEV.
     # Pure-Go single binary: prove it loads, then actually stand up the bundled
     # dev server (server + SQLite) headless and confirm the frontend accepts a
     # connection on its port.
     run "$dir/bin/temporal" --version
-    port=17233
+    check_version "$archive_version" "$dir/bin/temporal" --version
+    # Port derived from THIS process, not a constant. The verify sweep boots
+    # every published version back to back in one job, and a fixed port meant
+    # each boot raced the previous one's teardown: whichever artifact landed on
+    # a port still held by its predecessor failed to bind, then sat out the full
+    # readiness timeout. That cost a red weekly verify three weeks running — on
+    # temporal 1.6.2, then 1.7.3, then 1.3.0, a different version and triple each
+    # time, which is the signature of a flake rather than a bad build. smoke.sh
+    # runs once per artifact, so $$ is fresh for every boot.
+    port=$(( 20000 + ($$ % 20000) ))
     "$dir/bin/temporal" server start-dev --headless --ip 127.0.0.1 --port "$port" \
       --db-filename "$work/temporal.db" >"$work/temporal.log" 2>&1 &
     tpid=$!
     ready=0
     for _ in $(seq 1 40); do
+      # If the server already died (a bind failure, say), stop waiting for a port
+      # that is never going to open and surface its log instead of timing out.
+      kill -0 "$tpid" 2>/dev/null || break
       if (exec 3<>"/dev/tcp/127.0.0.1/$port") 2>/dev/null; then exec 3>&- 3<&-; ready=1; break; fi
       sleep 1
     done
     kill "$tpid" 2>/dev/null || true
+    wait "$tpid" 2>/dev/null || true
     [ "$ready" = 1 ] || { echo "smoke: temporal frontend never opened :$port"; cat "$work/temporal.log"; exit 1; }
     echo "  smoke: temporal start-dev frontend up ok"
     ;;

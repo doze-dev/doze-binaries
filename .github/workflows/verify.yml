@@ -74,6 +74,10 @@ jobs:
              [.key, .value[$t].url, .value[$t].sha256] | @tsv' index.json > artifacts.tsv
           chmod +x scripts/*.sh
           mkdir -p listings
+          # Published artifacts that misreport their version can never be fixed;
+          # declare them rather than letting the sweep go permanently red. Builds
+          # never set this, so new binaries are still held to the strict check.
+          export DZB_VERSION_WAIVERS="$PWD/scripts/version-waivers.txt"
           total=0; failed=0
           echo "## verify: $engine ($triple)" >> "$GITHUB_STEP_SUMMARY"
           echo "| version | result |" >> "$GITHUB_STEP_SUMMARY"
@@ -81,11 +85,17 @@ jobs:
           while IFS=$'\t' read -r -u9 ver url sha; do
             total=$((total + 1))
             note="ok"
-            if ! curl -fsSL "$url" -o artifact.tar.gz </dev/null; then
+            # Download under the artifact's REAL name: smoke.sh derives the
+            # version it asserts against from the archive filename, so a generic
+            # "artifact.tar.gz" would make every version check compare against
+            # the string "artifact".
+            art="$(basename "$url")"
+            rm -f ./*.tar.gz
+            if ! curl -fsSL "$url" -o "$art" </dev/null; then
               note="download failed"
-            elif [ "$(shasum -a 256 artifact.tar.gz | awk '{print $1}')" != "$sha" ]; then
+            elif [ "$(shasum -a 256 "$art" | awk '{print $1}')" != "$sha" ]; then
               note="sha256 mismatch"
-            elif ! scripts/smoke.sh "$engine" artifact.tar.gz "$triple" >smoke.log 2>&1; then
+            elif ! scripts/smoke.sh "$engine" "$art" "$triple" >smoke.log 2>&1; then
               note="smoke failed"
               echo "::error::$engine $ver ($triple) failed smoke"
               tail -40 smoke.log
@@ -94,7 +104,7 @@ jobs:
             # Named after the ARCHIVE, not the engine, so the prefix matches what
             # scripts/parity-waivers.txt refers to (postgres ships postgresql-*).
             if [ "$note" = "ok" ] || [ "$note" = "smoke failed" ]; then
-              tar tzf artifact.tar.gz > "listings/$(basename "$url" .tar.gz).lst" 2>/dev/null || true
+              tar tzf "$art" > "listings/${art%.tar.gz}.lst" 2>/dev/null || true
             fi
             if [ "$note" = "ok" ]; then
               echo "  ok  $ver"
@@ -103,7 +113,7 @@ jobs:
               echo "FAIL  $ver — $note"
             fi
             echo "| $ver | $note |" >> "$GITHUB_STEP_SUMMARY"
-            rm -f artifact.tar.gz
+            rm -f "$art"
           done 9< artifacts.tsv
           echo "" >> "$GITHUB_STEP_SUMMARY"
           echo "**$((total - failed))/$total ok**" >> "$GITHUB_STEP_SUMMARY"

@@ -34,14 +34,19 @@ case "$triple" in
     # bash (5.x, for DocumentDB's codegen scripts) and gcc (its `cpp-NN` is the
     # GNU preprocessor DocumentDB's SQL token-paste needs; clang's drops it).
     brew install pkg-config cmake bash gcc \
-      icu4c openssl@3 lz4 zstd libxml2 readline pcre2 \
+      icu4c@78 openssl@3 lz4 zstd libxml2 readline pcre2 \
       geos proj json-c || true
     bp="$(brew --prefix)"
     GNU_CPP="$(ls "$bp"/bin/cpp-* 2>/dev/null | sort -V | tail -1)"
-    ICU_DIR="$(ls -d "$bp"/opt/icu4c@* 2>/dev/null | sort -V | tail -1)"; ICU_DIR="${ICU_DIR:-$bp/opt/icu4c}"
-    export PKG_CONFIG_PATH="$bp/opt/icu4c/lib/pkgconfig:$bp/opt/openssl@3/lib/pkgconfig:$bp/opt/pcre2/lib/pkgconfig:${PKG_CONFIG_PATH:-}"
-    export CPPFLAGS="-I$bp/opt/icu4c/include -I$bp/opt/openssl@3/include -I$bp/opt/readline/include ${CPPFLAGS:-}"
-    export LDFLAGS="-L$bp/opt/icu4c/lib -L$bp/opt/openssl@3/lib -L$bp/opt/readline/lib ${LDFLAGS:-}"
+    # Pinned to match recipes/postgres/build.sh — see the note there on why ICU
+    # is not allowed to float. The glob fallback stays for a machine that only
+    # has the unversioned keg.
+    ICU_DIR="$bp/opt/icu4c@78"
+    [ -d "$ICU_DIR" ] || ICU_DIR="$(ls -d "$bp"/opt/icu4c@* 2>/dev/null | sort -V | tail -1)"
+    ICU_DIR="${ICU_DIR:-$bp/opt/icu4c}"
+    export PKG_CONFIG_PATH="$bp/opt/icu4c@78/lib/pkgconfig:$bp/opt/openssl@3/lib/pkgconfig:$bp/opt/pcre2/lib/pkgconfig:${PKG_CONFIG_PATH:-}"
+    export CPPFLAGS="-I$bp/opt/icu4c@78/include -I$bp/opt/openssl@3/include -I$bp/opt/readline/include ${CPPFLAGS:-}"
+    export LDFLAGS="-L$bp/opt/icu4c@78/lib -L$bp/opt/openssl@3/lib -L$bp/opt/readline/lib ${LDFLAGS:-}"
     PATH="$bp/bin:$PATH"                       # modern bash first
     ;;
   *linux*)
