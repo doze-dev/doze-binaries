@@ -87,7 +87,7 @@ case "$triple" in
     sudo apt-get update -y
     sudo apt-get install -y build-essential cmake bison pkg-config patchelf \
       libncurses-dev libssl-dev zlib1g-dev
-    # These four are not optional extras — each one gates a plugin, and MariaDB
+    # These are not optional extras — each one gates a plugin, and MariaDB
     # SKIPS a plugin whose headers are missing without failing, or even warning
     # loudly, at cmake time. Leaving them out is precisely how the Linux source
     # arm came to ship a smaller plugin set than the macOS source arm running
@@ -97,11 +97,18 @@ case "$triple" in
     #   libkrb5-dev         -> auth_gssapi, auth_gssapi_client
     #   libcurl4-openssl-dev-> hashicorp_key_management (Vault-backed key mgmt)
     #   liblzo2-dev         -> provider_lzo (LZO page compression)
+    #   libbz2-dev          -> provider_bzip2
+    #   liblzma-dev         -> provider_lzma
+    # The last two were the parity gate's first catch: they build on
+    # ubuntu-22.04 (something else on that image drags the headers in) but not
+    # on ubuntu-latest, so the plugin set silently depended on the runner image
+    # rather than on anything this recipe declares.
     # There is no cmake flag that turns the silence into an error: each plugin's
     # CMakeLists RETURNs before MYSQL_ADD_PLUGIN when its dependency is absent,
     # so -DPLUGIN_AUTH_PAM=DYNAMIC wouldn't fail either. The plugin set can only
     # be asserted on the ARTIFACT — see scripts/parity.sh.
-    sudo apt-get install -y libpam0g-dev libkrb5-dev libcurl4-openssl-dev liblzo2-dev
+    sudo apt-get install -y libpam0g-dev libkrb5-dev libcurl4-openssl-dev \
+      liblzo2-dev libbz2-dev liblzma-dev
     ;;
   *darwin*)
     export HOMEBREW_NO_AUTO_UPDATE=1 HOMEBREW_NO_INSTALLED_DEPENDENTS_CHECK=1 HOMEBREW_NO_INSTALL_UPGRADE=1
