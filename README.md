@@ -13,7 +13,7 @@ binary **mirror**. No third-party repackagers: doze controls the whole chain.
 | **Kvrocks** | every stable 2.x from 2.1 | built from source (RocksDB-backed; the slow one) |
 | **FerretDB** | 2.7.0 (gateway↔documentdb pairing gates a back-catalog) | compiled from source (pure Go) |
 | **DocumentDB** | the extension release the ferret module pins | Postgres 18 + Microsoft's extension chain, from source |
-| **MariaDB** | every GA patch of the 11.4/11.8/12.x lines | upstream generic tarballs, repackaged (x86_64 Linux only) |
+| **MariaDB** | every GA patch of the 11.4/11.8/12.x lines | built from source (earlier releases repackaged upstream's tarball on x86_64 — see [plugin parity](#the-mariadb-back-catalog-ships-different-auth-plugins-per-architecture)) |
 | **Temporal** | every stable CLI release from 1.0 | compiled from source (pure Go) |
 
 The authoritative list is [`versions.yaml`](versions.yaml) — exact versions are
@@ -47,6 +47,8 @@ cmd/dzb/                   Go tool for the data work (no drift with doze's schem
 scripts/                   shell, for orchestrating CLIs:
   package.sh                 tar.gz + .sha256 a staged install dir
   smoke.sh                   publish gate: boot + exercise every archive
+  parity.sh                  publish gate: a version's triples must match
+  parity-waivers.txt         divergences that shipped before that gate existed
   bundle-linux-deps.sh       copy non-system .so + patchelf rpath
   bundle-macos-deps.sh       install_name_tool relocation + ad-hoc codesign
 recipes/<engine>/build.sh  build one (version, triple) into an archive
@@ -142,6 +144,65 @@ resolving a bare major; a pinned version installs as long as its frozen archive
 exists, which is forever.
 
 ## Verification
+
+### Same tree on every triple
+
+A version must ship the *same* tree on every architecture. If it doesn't, a
+working config becomes an arch-dependent failure — the engine starts on your
+laptop and refuses to start in production, with an error that points at your
+config rather than at the binary. `scripts/parity.sh` diffs `bin/`, `share/` and
+`lib/plugin/` across a version's triples and enforces that:
+
+- **PR (`ci.yml`)** — the trees a recipe change just built on Linux and macOS
+  are diffed against each other. No waivers.
+- **Release (`build-engine.yml`)** — every freshly built archive is diffed
+  before anything is uploaded. No waivers: a published archive is immutable, so
+  this is the last moment a divergence can be stopped.
+- **Weekly (`verify.yml`)** — the whole published catalog, reusing the listings
+  the verify sweep already downloads. Divergences that shipped before the gate
+  existed are declared in [`scripts/parity-waivers.txt`](scripts/parity-waivers.txt);
+  anything else fails.
+
+Bundled system libraries (the flat files in `lib/`) are excluded — those
+genuinely differ per OS, and smoke's relocation check already proves each one
+resolves.
+
+#### The MariaDB back-catalog ships different auth plugins per architecture
+
+**Permanent for the 21 versions listed in
+[`scripts/parity-waivers.txt`](scripts/parity-waivers.txt)** — every 11.4.x and
+11.8.x, plus 12.0.2, 12.1.2 and 12.2.2. Until the recipe was unified, x86_64
+Linux repackaged upstream's generic binary tarball while the other triples built
+from source, and the two are not the same tree. Published archives are immutable
+— consumers pin their checksums — so these can only be documented:
+
+| `lib/plugin/…` | server plugin | x86_64 Linux | aarch64 Linux | aarch64 macOS |
+|---|---|---|---|---|
+| `auth_parsec.so` | `parsec` | **missing** | yes | yes |
+| `auth_mysql_sha2.so` | `caching_sha2_password` | **missing** | yes | yes |
+| `sha256_password.so` | `sha256_password` | **missing** | yes | yes |
+| `auth_pam.so`, `auth_pam_v1.so` | `pam` | yes | **missing** | yes |
+| `auth_gssapi.so` | `gssapi` | yes | **missing** | yes |
+| `hashicorp_key_management.so` | — | yes | **missing** | yes |
+| `provider_lzo.so` | — | yes | **missing** | yes |
+
+So on those versions a `settings = { plugin_load_add = "auth_parsec" }` works on
+arm64 and fails on x86_64 — MariaDB packages PARSEC's server half separately and
+it is simply not in the tarball.
+
+The trap is what sits next to it. Upstream's tarball *does* ship a `parsec.so`,
+and the server plugin is *named* `parsec`, so reaching for that one looks
+reasonable — but it is the **client** plugin: it exports
+`_mysql_client_plugin_declaration_`, not `_mysql_plugin_interface_version_`.
+Loading it server-side fails with *"Can't find symbol
+`_mysql_plugin_interface_version_`"*, which reads like a corrupt plugin rather
+than an absent one. The two files are not interchangeable.
+
+Every MariaDB version published after those builds from source on all three
+triples and carries the full set. If you need one of these plugins, move to a
+release that isn't in the waiver file.
+
+### The smoke gate
 
 Every artifact passes `scripts/smoke.sh` before it publishes: extraction to a
 throwaway path, a relocation check on every bundled library, then a real boot

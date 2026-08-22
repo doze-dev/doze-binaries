@@ -122,6 +122,17 @@ jobs:
             "https://github.com/${{ github.repository }}/releases/download/${{ inputs.engine }}" \
             existing.idx > dist/index.yaml
           ls -l dist
+      # Cross-triple parity, checked BEFORE anything is uploaded. A published
+      # archive is immutable, so a version that ships different trees on
+      # different architectures can never be repaired afterwards — this is the
+      # last moment it can be stopped. Versions where a sibling triple's build
+      # failed have nothing to compare against and are reported as such, so this
+      # never overrides "publish what did build".
+      - name: Parity check (a version's triples must ship the same tree)
+        run: |
+          chmod +x scripts/*.sh
+          scripts/parity.sh dist
+
       - name: Publish (append new archives; refresh index.yaml)
         run: gh release upload ${{ inputs.engine }} dist/* --clobber
       - name: Remove the legacy index.json once index.yaml is published
