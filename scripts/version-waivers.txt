@@ -1,0 +1,24 @@
+# Published artifacts known to misreport their own version.
+#
+# Read ONLY by the weekly verify sweep (DZB_VERSION_WAIVERS in verify.yml). A
+# build never sets it, so a freshly built binary that lies about its version
+# still fails smoke.sh outright — nothing in here can excuse a new one.
+#
+# A waived artifact is still CHECKED and still prints the mismatch; it just
+# doesn't fail the sweep. Published archives are immutable, so this is the only
+# honest option: the breakage is real, permanent, and better named than hidden.
+#
+# Format: <engine> <version pattern>...   ( `#` starts a comment )
+#
+# ── temporal: the unstamped and mis-stamped eras ────────────────────────────
+# 1.1.0-1.5.1 were built before recipes/temporal/build.sh stamped a version at
+# all, so they carry upstream's "0.0.0-DEV" default.
+#
+# 1.6.0-1.8.0 were built WITH the stamp, but upstream moved the Version var to
+# internal/temporalcli at v1.6.0 and `go build -X` ignores an unknown symbol
+# silently — so the stamp was a no-op and they report "0.0.0-DEV" too.
+#
+# 1.0.0 is correct: built after the stamp landed, back when the old package
+# path still matched. Deliberately NOT waived.
+temporal 1.1.0 1.1.1 1.1.2 1.2.0 1.3.0 1.4.0 1.4.1 1.5.0 1.5.1
+temporal 1.6.0 1.6.1 1.6.2 1.7.0 1.7.1 1.7.2 1.7.3 1.8.0

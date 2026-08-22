@@ -119,14 +119,41 @@ archive_version="${archive_version#*-}"
 # total silence — no warning, no error, exit 0. Every gate we had passed: the
 # binary built, booted, served, and lied about what it was. Nothing compared the
 # name on the tin to the contents, so nothing could have caught it.
+# DZB_VERSION_WAIVERS names a file of already-published artifacts known to
+# misreport their version (see scripts/version-waivers.txt). Only the verify
+# sweep sets it; a build leaves it unset, so a newly built binary that lies
+# about itself always fails. A waived artifact is still checked and still prints
+# the mismatch — it just doesn't fail a sweep over immutable archives.
+version_waived() {
+  local f="${DZB_VERSION_WAIVERS:-}" line wp wv
+  [ -n "$f" ] && [ -f "$f" ] || return 1
+  while read -r line; do
+    line="${line%%#*}"
+    # shellcheck disable=SC2086
+    set -- $line
+    [ $# -ge 2 ] || continue
+    wp="$1"; shift
+    [ "$wp" = "$engine" ] || continue
+    for wv in "$@"; do
+      [ "$wv" = "$archive_version" ] && return 0
+    done
+  done < "$f"
+  return 1
+}
+
 check_version() {
   local want="$1"; shift
   local got
   got="$("$@" 2>&1 | head -1)"
   case "$got" in
-    *"$want"*) echo "  smoke: version ok ($want)" ;;
-    *) echo "smoke: VERSION MISMATCH — archive claims '$want', binary reports: $got"; exit 1 ;;
+    *"$want"*) echo "  smoke: version ok ($want)"; return ;;
   esac
+  if version_waived; then
+    echo "  smoke: version mismatch (KNOWN, waived) — archive claims '$want', binary reports: $got"
+    return
+  fi
+  echo "smoke: VERSION MISMATCH — archive claims '$want', binary reports: $got"
+  exit 1
 }
 
 case "$engine" in
@@ -202,6 +229,7 @@ EOF
     "$dir/bin/valkey-cli" -s "$work/vk.sock" set smoke ok >/dev/null
     got="$("$dir/bin/valkey-cli" -s "$work/vk.sock" get smoke)"
     kill "$vpid" 2>/dev/null || true
+    wait "$vpid" 2>/dev/null || true
     [ "$got" = "ok" ] || { echo "smoke: valkey GET returned '$got', want ok"; exit 1; }
     echo "  smoke: valkey boot + set/get ok"
     ;;
@@ -210,7 +238,7 @@ EOF
     check_version "$archive_version" "$dir/bin/kvrocks" --version
     # Boot with a minimal config (keys stable across 2.x) and speak raw RESP over
     # /dev/tcp — the archive ships no client binary.
-    kvport=17666
+    kvport=$(( 20000 + ($$ % 20000) ))   # not a constant — see the temporal note below
     printf 'port %s\ndir %s\n' "$kvport" "$work/kvdata" > "$work/kv.conf"
     mkdir -p "$work/kvdata"
     "$dir/bin/kvrocks" -c "$work/kv.conf" >"$work/kv.log" 2>&1 &
@@ -223,6 +251,7 @@ EOF
       sleep 1
     done
     kill "$kpid" 2>/dev/null || true
+    wait "$kpid" 2>/dev/null || true
     [ "$ready" = 1 ] || { echo "smoke: kvrocks never answered PING"; cat "$work/kv.log"; exit 1; }
     echo "  smoke: kvrocks boot + RESP ping ok"
     ;;
@@ -292,16 +321,28 @@ EOF
     # connection on its port.
     run "$dir/bin/temporal" --version
     check_version "$archive_version" "$dir/bin/temporal" --version
-    port=17233
+    # Port derived from THIS process, not a constant. The verify sweep boots
+    # every published version back to back in one job, and a fixed port meant
+    # each boot raced the previous one's teardown: whichever artifact landed on
+    # a port still held by its predecessor failed to bind, then sat out the full
+    # readiness timeout. That cost a red weekly verify three weeks running — on
+    # temporal 1.6.2, then 1.7.3, then 1.3.0, a different version and triple each
+    # time, which is the signature of a flake rather than a bad build. smoke.sh
+    # runs once per artifact, so $$ is fresh for every boot.
+    port=$(( 20000 + ($$ % 20000) ))
     "$dir/bin/temporal" server start-dev --headless --ip 127.0.0.1 --port "$port" \
       --db-filename "$work/temporal.db" >"$work/temporal.log" 2>&1 &
     tpid=$!
     ready=0
     for _ in $(seq 1 40); do
+      # If the server already died (a bind failure, say), stop waiting for a port
+      # that is never going to open and surface its log instead of timing out.
+      kill -0 "$tpid" 2>/dev/null || break
       if (exec 3<>"/dev/tcp/127.0.0.1/$port") 2>/dev/null; then exec 3>&- 3<&-; ready=1; break; fi
       sleep 1
     done
     kill "$tpid" 2>/dev/null || true
+    wait "$tpid" 2>/dev/null || true
     [ "$ready" = 1 ] || { echo "smoke: temporal frontend never opened :$port"; cat "$work/temporal.log"; exit 1; }
     echo "  smoke: temporal start-dev frontend up ok"
     ;;
