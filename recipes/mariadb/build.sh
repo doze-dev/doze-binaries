@@ -76,7 +76,7 @@ curate() {
   # library doze doesn't ship, which would trip smoke.sh's relocation gate on
   # one triple and hand parity.sh a divergence to report.
   for p in ha_rocksdb ha_mroonga ha_connect ha_spider ha_sphinx ha_s3 \
-           ha_columnstore ha_oqgraph provider_snappy wsrep_info \
+           ha_columnstore ha_oqgraph ha_duckdb provider_snappy wsrep_info \
            cracklib_password_check; do
     rm -f "$prefix/lib/plugin/$p.so" "$prefix/lib/plugin/$p.dylib"
   done
@@ -151,7 +151,15 @@ build="$(mktemp -d)/build"; mkdir -p "$build"; cd "$build"
 # - system OpenSSL (bundle step relocates it), bundled PCRE2 (one less .so)
 # - no galera/wsrep, no unit tests, no embedded server
 # - heavy optional engines off: columnstore, rocksdb, mroonga, spider,
-#   connect, oqgraph, s3 — none has a doze use case, all bloat the build
+#   connect, oqgraph, s3, duckdb — none has a doze use case, all bloat the build
+#
+#   DUCKDB is off for a second reason as well: upstream builds it on Linux ONLY
+#   ("-- DuckDB: not Linux, skipping" on macOS), so while it ships there is no
+#   way for every triple to carry the same tree — the parity gate caught exactly
+#   that on 11.4.13, 11.8.9 and 12.3.3 and refused to publish them. It also
+#   compiles DuckDB from a bundled submodule with its own parquet/json/icu
+#   extensions, which is a lot of build time and ~20MB of artifact for an
+#   analytics engine doze never starts.
 # - CMAKE_POLICY_VERSION_MINIMUM: CMake 4 dropped compat with the old
 #   minimums some MariaDB trees declare
 cmake "$src" \
@@ -168,7 +176,7 @@ cmake "$src" \
   -DWITH_ZLIB=bundled \
   -DPLUGIN_COLUMNSTORE=NO -DPLUGIN_ROCKSDB=NO -DPLUGIN_MROONGA=NO \
   -DPLUGIN_SPIDER=NO -DPLUGIN_SPHINX=NO -DPLUGIN_CONNECT=NO \
-  -DPLUGIN_OQGRAPH=NO -DPLUGIN_S3=NO \
+  -DPLUGIN_OQGRAPH=NO -DPLUGIN_S3=NO -DPLUGIN_DUCKDB=NO \
   $(if [ "${triple#*darwin}" != "$triple" ]; then
       nc="$(brew --prefix ncurses)"
       echo "-DCURSES_INCLUDE_PATH=$nc/include -DCURSES_LIBRARY=$nc/lib/libncurses.dylib"
