@@ -222,18 +222,26 @@ func fetchIndex(loc string) (body []byte, found bool, err error) {
 	return b, true, nil
 }
 
-// verifyItem is one (engine, triple) job of the weekly verify sweep.
+// verifyItem is one job of the weekly verify sweep: a base engine on one
+// triple, or every extension bundle of one Postgres major on one triple.
 type verifyItem struct {
-	Engine string `json:"engine"`
-	Triple string `json:"triple"`
-	Runner string `json:"runner"`
+	// Name labels the job and its parity-listing artifact: the engine, or
+	// pgext-pg<major> for a bundle group.
+	Name string `json:"name"`
+	// Engines is the space-separated list of engines the job verifies.
+	Engines string `json:"engines"`
+	Triple  string `json:"triple"`
+	Runner  string `json:"runner"`
 }
 
-// runVerifyPlan prints the verify workflow's matrix: one job per (engine,
-// triple), for the engines named (space- or comma-separated; "--pgext" for
-// every extension bundle) or every engine when none are. It replaces a jq
-// expression over versions.yaml that could not see the expanded pgext-*
-// engines.
+// runVerifyPlan prints the verify workflow's matrix for the engines named
+// (space- or comma-separated; "--pgext" for every extension bundle, "--base"
+// for every other engine), or for every engine when none are. Base engines
+// get one job per (engine, triple). Bundles are grouped per (Postgres major,
+// triple): they are small, share the Postgres trees the job downloads, and
+// one job each would overrun GitHub's 256-job matrix cap within two waves
+// (16 extensions x 5 majors x 3 triples = 240). It replaces a jq expression
+// over versions.yaml that could not see the expanded pgext-* engines.
 func runVerifyPlan(args []string) error {
 	cfg, err := loadConfig()
 	if err != nil {
@@ -272,9 +280,26 @@ func (c *config) verifyItems(sel string) ([]verifyItem, error) {
 		engines = c.engineNames()
 	}
 	items := []verifyItem{}
+	groups := map[string]int{} // pgext-pg<major>|triple -> index in items
+	seen := map[string]bool{}
 	for _, e := range engines {
+		if seen[e] {
+			continue
+		}
+		seen[e] = true
 		for _, t := range c.triplesFor(c.Engines[e]) {
-			items = append(items, verifyItem{Engine: e, Triple: t, Runner: c.Triples[t]})
+			ext, isExt := c.pgext[e]
+			if !isExt {
+				items = append(items, verifyItem{Name: e, Engines: e, Triple: t, Runner: c.Triples[t]})
+				continue
+			}
+			name := fmt.Sprintf("%spg%d", pgextPrefix, ext.PGMajor)
+			if i, ok := groups[name+"|"+t]; ok {
+				items[i].Engines += " " + e
+				continue
+			}
+			groups[name+"|"+t] = len(items)
+			items = append(items, verifyItem{Name: name, Engines: e, Triple: t, Runner: c.Triples[t]})
 		}
 	}
 	return items, nil

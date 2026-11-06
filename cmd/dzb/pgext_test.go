@@ -296,12 +296,27 @@ func TestBundleEnv(t *testing.T) {
 func TestVerifyItems(t *testing.T) {
 	cfg := mustConfig(t, testCatalog)
 	all, err := cfg.verifyItems("")
-	if err != nil || len(all) != (2+7)*2 {
-		t.Errorf("all = %d items (%v), want 18", len(all), err)
+	if err != nil {
+		t.Fatal(err)
 	}
-	some, err := cfg.verifyItems("valkey,--pgext")
-	if err != nil || len(some) != (1+7)*2 {
-		t.Errorf("valkey,--pgext = %d items (%v), want 16", len(some), err)
+	// 2 base engines x 2 triples, plus bundles grouped per (major, triple):
+	// majors 16, 17, 18 x 2 triples.
+	if len(all) != 2*2+3*2 {
+		t.Errorf("all = %d items, want 10: %+v", len(all), all)
+	}
+	var pg17 *verifyItem
+	for i := range all {
+		if all[i].Name == "pgext-pg17" && all[i].Triple == "aarch64-apple-darwin" {
+			pg17 = &all[i]
+		}
+	}
+	want := "pgext-pg_cron-pg17 pgext-pg_hint_plan-pg17 pgext-pgaudit-pg17 pgext-vector-pg17"
+	if pg17 == nil || pg17.Engines != want {
+		t.Errorf("pgext-pg17 group = %+v, want engines %q", pg17, want)
+	}
+	some, err := cfg.verifyItems("valkey,--pgext valkey")
+	if err != nil || len(some) != 1*2+3*2 {
+		t.Errorf("valkey,--pgext = %d items (%v), want 8", len(some), err)
 	}
 	if _, err := cfg.verifyItems("nope"); err == nil {
 		t.Error("unknown engine should fail")

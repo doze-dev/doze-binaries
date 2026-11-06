@@ -28,13 +28,17 @@ jobs:
       - name: dzb builds + runs
         run: |
           go build ./cmd/dzb
+          go test ./cmd/dzb
           go run ./cmd/dzb engines
+          go run ./cmd/dzb engines --pgext
           go run ./cmd/dzb plan >/dev/null
+          go run ./cmd/dzb plan --pgext >/dev/null
+          go run ./cmd/dzb verify-plan >/dev/null
           go run ./cmd/dzb manifest /nonexistent https://example.com >/dev/null 2>&1 || true
       - name: Shell-lint recipes + scripts
         run: |
           sudo apt-get update && sudo apt-get install -y shellcheck
-          for f in recipes/*/build.sh scripts/*.sh; do
+          for f in recipes/*/build.sh recipes/pgext/*.sh recipes/pgext/*/*.sh scripts/*.sh; do
             bash -n "$f"
             shellcheck -S warning "$f" || true   # advisory; bash -n is the hard gate
           done
@@ -48,12 +52,26 @@ jobs:
     steps:
       - uses: actions/checkout@v5
         with: { fetch-depth: 0 }
+      - uses: actions/setup-go@v6
+        with: { go-version: 'stable' }
       - id: detect
         env:
           BASE: ${{ github.event.pull_request.base.sha }}
         run: |
           changed="$(git diff --name-only "$BASE" HEAD -- recipes scripts versions.yaml || true)"
-          engines="$(echo "$changed" | grep '^recipes/' | cut -d/ -f2 | sort -u || true)"
+          engines="$(echo "$changed" | grep '^recipes/' | grep -v '^recipes/pgext/' | cut -d/ -f2 | sort -u || true)"
+          # Extension bundles: a change to one extension's own files smokes that
+          # extension on its newest major; a change to the shared machinery
+          # (lib.sh, build.sh, verify.sh) smokes one bundle per code path —
+          # plain PGXS, vendored libpq + preload, a shipped client binary, and
+          # pgrx on PG18 (where the bundle installs into its own folder).
+          for ext in $(echo "$changed" | grep -E '^recipes/pgext/[^/]+/' | cut -d/ -f3 | sort -u); do
+            last="$(go run ./cmd/dzb engines --pgext | jq -r --arg e "$ext" '[.[] | select(startswith("pgext-" + $e + "-pg"))] | last // empty')"
+            engines="$engines $last"
+          done
+          if echo "$changed" | grep -qE '^recipes/pgext/[^/]+\.sh$'; then
+            engines="$engines pgext-vector-pg17 pgext-pg_cron-pg17 pgext-pg_repack-pg17 pgext-pg_jsonschema-pg18"
+          fi
           # A change to shared scripts/ or the catalog affects packaging for all —
           # smoke one fast engine (valkey) as a representative packaging check.
           if echo "$changed" | grep -qE '^(scripts/|versions\.yaml)'; then
@@ -82,10 +100,17 @@ jobs:
             ubuntu*) triple=x86_64-unknown-linux-gnu ;;
             macos*)  triple=aarch64-apple-darwin ;;
           esac
-          read -r version ref < <(go run ./cmd/dzb latest "${{ matrix.engine }}")
-          echo "building ${{ matrix.engine }} $version ($ref) for $triple"
+          engine="${{ matrix.engine }}"
+          read -r version ref < <(go run ./cmd/dzb latest "$engine")
+          echo "building $engine $version ($ref) for $triple"
           chmod +x scripts/*.sh recipes/*/*.sh
-          recipes/${{ matrix.engine }}/build.sh "$version" "$ref" "$triple" dist
+          case "$engine" in
+            pgext-*)   # pgext-<name>-pg<major>
+              name="${engine#pgext-}"
+              recipes/pgext/build.sh "${name%-pg*}" "$version" "${name##*-pg}" "$triple" dist ;;
+            *)
+              recipes/$engine/build.sh "$version" "$ref" "$triple" dist ;;
+          esac
           # build.sh invokes scripts/smoke.sh, which RUNS the built binary from a
           # relocated path — the real "does it work on this OS" check.
       - name: Record the built tree for the parity job
