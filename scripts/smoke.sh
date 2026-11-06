@@ -97,13 +97,29 @@ check_relocation() {
       ;;
   esac
   [ "$bad" = 0 ] || { echo "smoke: relocation check failed — shipped binaries reference paths outside the package"; exit 1; }
-  [ "$n" -gt 0 ] || { echo "smoke: relocation check inspected 0 files — the archive has no binaries?"; exit 1; }
+  # An extension bundle may legitimately ship no binary at all (pgmq is SQL
+  # only); every other archive with nothing to inspect is a broken archive.
+  case "$engine" in pgext-*) ;; *)
+    [ "$n" -gt 0 ] || { echo "smoke: relocation check inspected 0 files — the archive has no binaries?"; exit 1; } ;;
+  esac
   echo "  smoke: relocation check ok ($n binaries/libraries inspected)"
 }
 
 # Every engine gets the relocation gate: anything shipped that still references a
 # path outside the package is a bug regardless of engine.
 check_relocation "$dir"
+
+# Extension bundles need a Postgres tree to prove anything; recipes/pgext/
+# verify.sh installs each into its major's tree (built-against and newest
+# minors), preloads it, runs CREATE EXTENSION and a smoke query, and checks the
+# archive against the bundle contract (bundle.json, name/version, layout).
+case "$engine" in
+  pgext-*)
+    "$(cd "$(dirname "$0")/.." && pwd)/recipes/pgext/verify.sh" "$tarball" "$triple"
+    echo "smoke OK: $engine $triple"
+    exit 0
+    ;;
+esac
 
 # The version the ARCHIVE NAME claims: <prefix>-<version>-<triple>.tar.gz.
 archive_version="$(basename "$tarball" .tar.gz)"

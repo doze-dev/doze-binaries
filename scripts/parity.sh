@@ -54,8 +54,13 @@ trap 'rm -rf "$work"' EXIT
 #    artifact — binaries, extensions, the template's config — stays gated.
 #  - a trailing .dylib is folded to .so so a macOS module compares against its
 #    Linux counterpart by name.
+#  - extension bundles (prefix pgext) are the exception to the flat-lib/ rule:
+#    their module IS a flat lib/ file (lib/vector.so), so only the vendored
+#    libraries beside it (lib/lib*: libpq, libssl, …) are dropped and the
+#    module itself must match across triples.
 normalize() {
-  local raw stripped
+  local raw stripped flatlib='^lib/[^/]+$'
+  [ "${1:-}" = pgext ] && flatlib='^lib/lib[^/]*$'
   raw="$(mktemp)"; stripped="$(mktemp)"
   sed -e 's|^\./||' | grep -v '^$' > "$raw"
   # Strip the archive's own top-level directory — its name embeds the triple, so
@@ -70,7 +75,7 @@ normalize() {
   fi
   grep -v '/$' "$stripped" \
     | grep -v '^$' \
-    | grep -vE '^lib/[^/]+$' \
+    | grep -vE "$flatlib" \
     | grep -vE '^share/documentdb-template/base/' \
     | sed -e 's|\.dylib$|.so|' \
     | sort -u
@@ -122,8 +127,8 @@ for f in "$dir"/*; do
   key="$prefix/$version"
   mkdir -p "$work/g/$key"
   case "$base" in
-    *.tar.gz) tar tzf "$f" 2>/dev/null | normalize > "$work/g/$key/$triple" ;;
-    *.lst)    normalize < "$f" > "$work/g/$key/$triple" ;;
+    *.tar.gz) tar tzf "$f" 2>/dev/null | normalize "$prefix" > "$work/g/$key/$triple" ;;
+    *.lst)    normalize "$prefix" < "$f" > "$work/g/$key/$triple" ;;
   esac
   # An unreadable archive yields an empty listing, and comparing empty against
   # empty would report a clean pass. Refuse to guess.

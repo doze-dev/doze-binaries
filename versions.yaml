@@ -167,8 +167,11 @@ engines:
 # lists (14.0 … 18.0), downloaded from the published postgres release: modules
 # built against x.0 load on every x.N, not the other way round. A major an
 # extension does not support is simply left out of pg/lines.
-# Wave 1 versions and majors verified 2026-11-07 (tags exist upstream; every
-# listed major built and passed CREATE EXTENSION + a smoke query on macOS).
+# Wave 1 checked 2026-11-07: every tag exists upstream, and all 50
+# (extension x major) bundles built on aarch64-apple-darwin and passed
+# recipes/pgext/verify.sh against both the x.0 and the newest minor. Linux was
+# smoke-tested on Ubuntu 24.04 arm64 only (7 bundles); CI's 22.04 runners are
+# the real gate for the Linux triples.
 extensions:
   vector:                       # pgvector
     repo: https://github.com/pgvector/pgvector
@@ -191,11 +194,11 @@ extensions:
     license: PostgreSQL
     pg: [14, 15, 16, 17, 18]
     versions: ["5.5.0"]
-    # The background worker runs maintenance on its own; without it pg_partman
-    # still works and run_maintenance() is called by hand (or by pg_cron).
-    preload: [pg_partman_bgw]
-    settings:
-      pg_partman_bgw.dbname: "{db}"
+    # No default preload. The optional background worker (pg_partman_bgw)
+    # needs pg_partman_bgw.dbname AND a role to run as — 5.5 defaults
+    # pg_partman_bgw.role to "partman_maintainer", and with that role absent
+    # the worker FATALs on every interval (measured). Without the worker,
+    # run_maintenance_proc() is called by hand or scheduled with pg_cron.
   pgmq:
     repo: https://github.com/pgmq/pgmq
     ref: "v{v}"
