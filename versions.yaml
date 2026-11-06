@@ -133,3 +133,123 @@ engines:
       "1.5.0", "1.5.1", "1.6.0", "1.6.1", "1.6.2", "1.7.0", "1.7.1", "1.7.2",
       "1.7.3", "1.8.0", "1.8.1", "1.8.2",
     ]
+
+# Postgres extension bundles, published as engines in the same mirror.
+#
+# Each (extension × Postgres major) becomes its own engine, keyed
+# pgext-<name>-pg<major> (pgext-vector-pg17), with its own release and
+# index.yaml — exactly like postgres — so doze's fetcher, digests and doze.lock
+# pins handle a bundle with no new code. dzb expands this list into those
+# engines; there is no second list. The contract (archive layout, bundle.json)
+# is doze/docs/design/postgres-extensions.md; recipes/pgext builds it.
+#
+# Fields:
+#   repo      upstream git repository.
+#   ref       source-ref template: {v} = version verbatim, {v_} = dots->
+#             underscores, {pg} = the Postgres major. Default "{v}".
+#   subdir    where the Makefile/Cargo.toml lives, if not the repo root.
+#   build     pgxs (default) or pgrx (Rust; cargo-pgrx pinned to the crate's
+#             own pgrx version, read from its Cargo.lock).
+#   license   copied into bundle.json.
+#   pg        majors that every entry in `versions` supports.
+#   versions  the extension's OWN versions, verbatim (0.8.7). The index keys
+#             them two-part (major_parts 2): ResolveMajor("0.8") -> newest 0.8.x.
+#   lines     per-major release lines, for extensions that cut one series per
+#             Postgres major (pgaudit 1.6.x is PG14-only, 17.x is PG17-only).
+#             A major here uses its own versions (and ref) instead of the
+#             top-level ones; it need not appear in `pg`.
+#   preload   libraries that must be in shared_preload_libraries.
+#   settings  postgresql.conf settings it needs ({db} = the instance database).
+#   env       server environment ({root} = the bundle's install root).
+#   requires  extensions to CREATE first (by CREATE EXTENSION name).
+#
+# Bundles build against the OLDEST minor of each major the postgres catalog
+# lists (14.0 … 18.0), downloaded from the published postgres release: modules
+# built against x.0 load on every x.N, not the other way round. A major an
+# extension does not support is simply left out of pg/lines.
+# Wave 1 versions and majors verified 2026-11-07 (tags exist upstream; every
+# listed major built and passed CREATE EXTENSION + a smoke query on macOS).
+extensions:
+  vector:                       # pgvector
+    repo: https://github.com/pgvector/pgvector
+    ref: "v{v}"
+    license: PostgreSQL
+    pg: [14, 15, 16, 17, 18]
+    versions: ["0.8.7"]
+  pg_cron:
+    repo: https://github.com/citusdata/pg_cron
+    ref: "v{v}"
+    license: PostgreSQL
+    pg: [14, 15, 16, 17, 18]
+    versions: ["1.6.8"]
+    preload: [pg_cron]
+    settings:
+      cron.database_name: "{db}"
+  pg_partman:
+    repo: https://github.com/pgpartman/pg_partman
+    ref: "v{v}"
+    license: PostgreSQL
+    pg: [14, 15, 16, 17, 18]
+    versions: ["5.5.0"]
+    # The background worker runs maintenance on its own; without it pg_partman
+    # still works and run_maintenance() is called by hand (or by pg_cron).
+    preload: [pg_partman_bgw]
+    settings:
+      pg_partman_bgw.dbname: "{db}"
+  pgmq:
+    repo: https://github.com/pgmq/pgmq
+    ref: "v{v}"
+    subdir: pgmq-extension
+    license: PostgreSQL
+    pg: [14, 15, 16, 17, 18]
+    versions: ["1.13.1"]
+  hypopg:
+    repo: https://github.com/HypoPG/hypopg
+    ref: "{v}"
+    license: PostgreSQL
+    pg: [14, 15, 16, 17, 18]
+    versions: ["1.4.5"]
+  pg_hint_plan:
+    repo: https://github.com/ossc-db/pg_hint_plan
+    ref: "REL{pg}_{v_}"
+    license: BSD-3-Clause
+    # Hints are only honoured once the library is loaded; preloading is what
+    # makes them "just work" (CREATE EXTENSION alone adds only the hint table).
+    preload: [pg_hint_plan]
+    lines:
+      14: { versions: ["1.4.5"] }
+      15: { versions: ["1.5.4"] }
+      16: { versions: ["1.6.3"] }
+      17: { versions: ["1.7.2"] }
+      18: { versions: ["1.8.1"] }
+  pg_repack:                    # ships the pg_repack client in bin/
+    repo: https://github.com/reorg/pg_repack
+    ref: "ver_{v}"
+    license: BSD-3-Clause
+    pg: [14, 15, 16, 17, 18]
+    versions: ["1.5.3"]
+  pgaudit:
+    repo: https://github.com/pgaudit/pgaudit
+    ref: "{v}"
+    license: PostgreSQL
+    preload: [pgaudit]
+    lines:
+      14: { versions: ["1.6.3"] }
+      15: { versions: ["1.7.1"] }
+      16: { versions: ["16.1"] }
+      17: { versions: ["17.1"] }
+      18: { versions: ["18.0"] }
+  pg_ivm:
+    repo: https://github.com/sraoss/pg_ivm
+    ref: "v{v}"
+    license: PostgreSQL
+    pg: [14, 15, 16, 17, 18]
+    versions: ["1.17"]
+    preload: [pg_ivm]
+  pg_jsonschema:
+    repo: https://github.com/supabase/pg_jsonschema
+    ref: "v{v}"
+    build: pgrx
+    license: Apache-2.0
+    pg: [14, 15, 16, 17, 18]
+    versions: ["0.3.4"]

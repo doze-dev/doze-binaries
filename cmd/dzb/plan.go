@@ -19,6 +19,10 @@ type matrixItem struct {
 	Ref     string `json:"ref"`
 	Triple  string `json:"triple"`
 	Runner  string `json:"runner"`
+	// Ext and PGMajor are set for pgext-* bundles: the extension's CREATE
+	// EXTENSION name and the Postgres major — recipes/pgext/build.sh's inputs.
+	Ext     string `json:"ext,omitempty"`
+	PGMajor int    `json:"pg_major,omitempty"`
 }
 
 func runPlan(args []string) error {
@@ -27,40 +31,21 @@ func runPlan(args []string) error {
 		return err
 	}
 
-	// Optional engine filter — per-engine workflows pass a single engine.
+	// Optional engine filter — per-engine workflows pass a single engine;
+	// --pgext selects every extension bundle (one matrix for all of them).
 	engines := cfg.engineNames()
-	if len(args) > 0 && args[0] != "" {
+	if len(args) > 0 && args[0] == "--pgext" {
+		engines = cfg.engineGroup(true)
+	} else if len(args) > 0 && args[0] != "" {
 		if _, ok := cfg.Engines[args[0]]; !ok {
 			return fmt.Errorf("unknown engine %q (not in versions.yaml)", args[0])
 		}
 		engines = []string{args[0]}
 	}
 
-	include := []matrixItem{}
-	for _, engine := range engines {
-		spec := cfg.Engines[engine]
-		// Already-published artifacts are immutable; never rebuild them (a rebuild
-		// would change a checksum and break every lockfile that pinned it).
-		published, err := publishedArtifacts(engine)
-		if err != nil {
-			return err
-		}
-		forced := rebuildSet()
-		// Stable triple order so the emitted matrix is deterministic; an engine
-		// may restrict its platforms (see engineSpec.Triples).
-		triples := cfg.triplesFor(spec)
-		for _, v := range spec.Versions {
-			full := spec.archiveVersion(v)
-			for _, t := range triples {
-				if published[key(engine, full, t)] && !forced(full, t) {
-					continue // already built and frozen (DZB_REBUILD overrides)
-				}
-				include = append(include, matrixItem{
-					Engine: engine, Version: full, Ref: spec.ref(v),
-					Triple: t, Runner: cfg.Triples[t],
-				})
-			}
-		}
+	include, err := cfg.planItems(engines, publishedArtifacts, rebuildSet())
+	if err != nil {
+		return err
 	}
 
 	// GitHub hard-caps a job matrix at 256 entries and FAILS SILENTLY past it
@@ -81,6 +66,40 @@ func runPlan(args []string) error {
 	}
 	fmt.Println(string(out))
 	return nil
+}
+
+// planItems lists the (engine, version, triple) jobs not yet published.
+// published is injected so tests need no network.
+func (c *config) planItems(engines []string, published func(string) (map[string]bool, error), forced func(full, triple string) bool) ([]matrixItem, error) {
+	cfg := c
+	include := []matrixItem{}
+	for _, engine := range engines {
+		spec := cfg.Engines[engine]
+		// Already-published artifacts are immutable; never rebuild them (a rebuild
+		// would change a checksum and break every lockfile that pinned it).
+		published, err := published(engine)
+		if err != nil {
+			return nil, err
+		}
+		ext := cfg.pgext[engine] // zero for base engines
+		// Stable triple order so the emitted matrix is deterministic; an engine
+		// may restrict its platforms (see engineSpec.Triples).
+		triples := cfg.triplesFor(spec)
+		for _, v := range spec.Versions {
+			full := spec.archiveVersion(v)
+			for _, t := range triples {
+				if published[key(engine, full, t)] && !forced(full, t) {
+					continue // already built and frozen (DZB_REBUILD overrides)
+				}
+				include = append(include, matrixItem{
+					Engine: engine, Version: full, Ref: spec.ref(v),
+					Triple: t, Runner: cfg.Triples[t],
+					Ext: ext.Name, PGMajor: ext.PGMajor,
+				})
+			}
+		}
+	}
+	return include, nil
 }
 
 func key(engine, full, triple string) string { return engine + "|" + full + "|" + triple }
@@ -201,4 +220,62 @@ func fetchIndex(loc string) (body []byte, found bool, err error) {
 		return nil, false, err
 	}
 	return b, true, nil
+}
+
+// verifyItem is one (engine, triple) job of the weekly verify sweep.
+type verifyItem struct {
+	Engine string `json:"engine"`
+	Triple string `json:"triple"`
+	Runner string `json:"runner"`
+}
+
+// runVerifyPlan prints the verify workflow's matrix: one job per (engine,
+// triple), for the engines named (space- or comma-separated; "--pgext" for
+// every extension bundle) or every engine when none are. It replaces a jq
+// expression over versions.yaml that could not see the expanded pgext-*
+// engines.
+func runVerifyPlan(args []string) error {
+	cfg, err := loadConfig()
+	if err != nil {
+		return err
+	}
+	items, err := cfg.verifyItems(strings.Join(args, " "))
+	if err != nil {
+		return err
+	}
+	out, err := json.Marshal(struct {
+		Include []verifyItem `json:"include"`
+	}{items})
+	if err != nil {
+		return err
+	}
+	fmt.Println(string(out))
+	return nil
+}
+
+func (c *config) verifyItems(sel string) ([]verifyItem, error) {
+	var engines []string
+	for _, tok := range strings.FieldsFunc(sel, func(r rune) bool { return r == ' ' || r == ',' }) {
+		switch {
+		case tok == "--pgext":
+			engines = append(engines, c.engineGroup(true)...)
+		case tok == "--base":
+			engines = append(engines, c.engineGroup(false)...)
+		default:
+			if _, ok := c.Engines[tok]; !ok {
+				return nil, fmt.Errorf("unknown engine %q (not in versions.yaml)", tok)
+			}
+			engines = append(engines, tok)
+		}
+	}
+	if len(engines) == 0 {
+		engines = c.engineNames()
+	}
+	items := []verifyItem{}
+	for _, e := range engines {
+		for _, t := range c.triplesFor(c.Engines[e]) {
+			items = append(items, verifyItem{Engine: e, Triple: t, Runner: c.Triples[t]})
+		}
+	}
+	return items, nil
 }
