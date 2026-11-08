@@ -1,5 +1,8 @@
 # doze-binaries
 
+> [!WARNING]
+> **Still in active development.** This project is not cleared for use yet. Expect breaking changes, and do not rely on it for real work.
+
 Prebuilt database-engine binaries for [doze](https://github.com/doze-dev/doze) —
 built in CI, published to a rolling GitHub release, and consumed by doze as a
 binary **mirror**. No third-party repackagers: doze controls the whole chain.
