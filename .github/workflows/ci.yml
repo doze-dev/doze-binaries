@@ -101,6 +101,35 @@ jobs:
           if-no-files-found: error
           retention-days: 1
 
+  # Windows (versions.yaml optional_triples): temporal is the only engine built
+  # there, natively on both architectures. Any change that could touch packaging
+  # builds and smokes it on both, so Windows breakage shows here, not in a release.
+  windows-smoke:
+    needs: changes
+    if: needs.changes.outputs.engines != '[]' && needs.changes.outputs.engines != ''
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: windows-latest, triple: x86_64-pc-windows-msvc }
+          - { os: windows-11-arm, triple: aarch64-pc-windows-msvc }
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
+        with: { go-version: 'stable' }
+      - name: Build + smoke temporal (newest version) for ${{ matrix.triple }}
+        run: |
+          read -r version ref < <(go run ./cmd/dzb latest temporal)
+          echo "building temporal $version ($ref) for ${{ matrix.triple }}"
+          chmod +x scripts/*.sh recipes/*/*.sh
+          recipes/temporal/build.sh "$version" "$ref" "${{ matrix.triple }}" dist
+          ls -l dist
+          tar tzf dist/*.tar.gz
+
   # Diff the trees the smoke job just built across platforms. No waivers: these
   # archives are minutes old and unpublished, so "the triples disagree" is a
   # recipe bug with nothing immutable standing in the way of fixing it.

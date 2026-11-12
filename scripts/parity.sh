@@ -32,7 +32,7 @@ waivers="${2:-}"   # empty = no divergence is excusable
 # The triples doze targets. Matching against a fixed list (rather than splitting
 # on dashes) is what makes the name parse unambiguous: documentdb's version is
 # itself dash-shaped ("0.112-0"), so only the triple tail is a reliable anchor.
-TRIPLES="aarch64-apple-darwin aarch64-unknown-linux-gnu x86_64-apple-darwin x86_64-unknown-linux-gnu"
+TRIPLES="aarch64-apple-darwin aarch64-unknown-linux-gnu x86_64-apple-darwin x86_64-unknown-linux-gnu x86_64-pc-windows-msvc aarch64-pc-windows-msvc"
 
 work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
@@ -53,7 +53,8 @@ trap 'rm -rf "$work"' EXIT
 #    and nothing outside the cluster ever names one. Everything else in that
 #    artifact — binaries, extensions, the template's config — stays gated.
 #  - a trailing .dylib is folded to .so so a macOS module compares against its
-#    Linux counterpart by name.
+#    Linux counterpart by name; a trailing .exe is dropped so a Windows program
+#    compares against its Unix counterpart.
 normalize() {
   local raw stripped
   raw="$(mktemp)"; stripped="$(mktemp)"
@@ -72,7 +73,7 @@ normalize() {
     | grep -v '^$' \
     | grep -vE '^lib/[^/]+$' \
     | grep -vE '^share/documentdb-template/base/' \
-    | sed -e 's|\.dylib$|.so|' \
+    | sed -e 's|\.dylib$|.so|' -e 's|\.exe$||' \
     | sort -u
   rm -f "$raw" "$stripped"
 }

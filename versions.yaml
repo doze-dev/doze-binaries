@@ -34,6 +34,12 @@ triples:
   # MACOSX_DEPLOYMENT_TARGET in build-engine.yml and checked by smoke.sh.
   aarch64-apple-darwin:      macos-15
 
+# Platforms an engine builds only when its own `triples` names them. Windows
+# has no build of most engines; the pure-Go ones (temporal) build natively here.
+optional_triples:
+  x86_64-pc-windows-msvc:    windows-latest
+  aarch64-pc-windows-msvc:   windows-11-arm
+
 engines:
   # Postgres uses its real upstream version (two-part, e.g. 16.14); the archive
   # is named 16.14.0 and built from the REL_16_14 branch.
@@ -130,10 +136,17 @@ engines:
   # dev server + SQLite + Web UI), cross-compiled per triple. Tags are "vX.Y.Z".
   temporal:
     ref: "v{v}"
-    # The temporal module's engine major is two-part ("1.1"), so the index
-    # keys versions by the first two dot-parts. Every stable CLI release from
-    # 1.0.0 (pre-1.0 is skipped; RCs excluded).
+    # The Go temporal module asks for a line ("1.1"), so the index keys versions
+    # by the first two dot-parts; the Rust module asks for "1", the newest 1.x,
+    # so the index carries that key too. Every stable CLI release from 1.0.0
+    # (pre-1.0 is skipped; RCs excluded).
     major_parts: 2
+    also_major_parts: [1]
+    # Pure Go, so it builds for Windows too: the first engine there.
+    triples: [
+      aarch64-apple-darwin, aarch64-unknown-linux-gnu, x86_64-unknown-linux-gnu,
+      x86_64-pc-windows-msvc, aarch64-pc-windows-msvc,
+    ]
     versions: [
       "1.0.0", "1.1.0", "1.1.1", "1.1.2", "1.2.0", "1.3.0", "1.4.0", "1.4.1",
       "1.5.0", "1.5.1", "1.6.0", "1.6.1", "1.6.2", "1.7.0", "1.7.1", "1.7.2",

@@ -125,3 +125,76 @@ func TestArchiveNameRe(t *testing.T) {
 		}
 	}
 }
+
+// temporal keys by line ("1.10") for doze modules that ask for one, and by "1"
+// for the Rust module's `version = 1`; neither depth may drop the other's keys,
+// and "1.10" must not sort below "1.9".
+func TestMajorsAtTwoDepths(t *testing.T) {
+	fulls := []string{"1.1.2", "1.8.2", "1.9.1", "1.10.0", "1.10.0"}
+	got := majors(fulls, []int{2, 1})
+	want := map[string]string{"1": "1.10.0", "1.1": "1.1.2", "1.8": "1.8.2", "1.9": "1.9.1", "1.10": "1.10.0"}
+	if len(got) != len(want) {
+		t.Fatalf("majors = %v, want %v", got, want)
+	}
+	for k, v := range want {
+		if got[k] != v {
+			t.Errorf("majors[%q] = %q, want %q (all: %v)", k, got[k], v, got)
+		}
+	}
+	if one := majors([]string{"16.4.0", "17.1.0"}, []int{0}); one["17"] != "17.1.0" || len(one) != 2 {
+		t.Errorf("a single default depth keys by the first part: %v", one)
+	}
+}
+
+func TestRunnerForOptionalTriples(t *testing.T) {
+	c := &config{
+		Triples:         map[string]string{"x86_64-unknown-linux-gnu": "ubuntu-22.04"},
+		OptionalTriples: map[string]string{"x86_64-pc-windows-msvc": "windows-latest"},
+	}
+	if c.runnerFor("x86_64-pc-windows-msvc") != "windows-latest" || c.runnerFor("x86_64-unknown-linux-gnu") != "ubuntu-22.04" {
+		t.Fatal("runnerFor must find global and optional triples")
+	}
+	if got := c.triplesFor(engineSpec{}); len(got) != 1 {
+		t.Fatalf("an engine naming no triples must not get optional ones: %v", got)
+	}
+}
+
+func TestArtifactLinesForOneTriple(t *testing.T) {
+	index := []byte(`engines:
+  temporal:
+    versions: {"1": 1.10.0}
+    artifacts:
+      1.10.0:
+        x86_64-pc-windows-msvc: {url: u10, sha256: s10}
+      1.9.1:
+        x86_64-pc-windows-msvc: {url: u9, sha256: s9}
+        aarch64-apple-darwin: {url: m9, sha256: t9}
+`)
+	got := artifactLines(index, "temporal", "x86_64-pc-windows-msvc")
+	want := []string{"1.9.1\tu9\ts9", "1.10.0\tu10\ts10"}
+	if len(got) != 2 || got[0] != want[0] || got[1] != want[1] {
+		t.Fatalf("artifactLines = %q, want %q", got, want)
+	}
+	if artifactLines(index, "valkey", "x86_64-pc-windows-msvc") != nil {
+		t.Fatal("an engine not in the index has no artifacts")
+	}
+}
+
+func TestRehomeMovesOnlyThisReleasesEntries(t *testing.T) {
+	base := "https://github.com/doze-dev/doze-binaries/releases/download/valkey"
+	em := &engineManifest{Artifacts: map[string]map[string]artifact{
+		"9.1.0": {"aarch64-apple-darwin": {URL: "https://github.com/NerdMeNot/doze-binaries/releases/download/valkey/valkey-9.1.0-aarch64-apple-darwin.tar.gz", SHA256: "s"}},
+		"9.1.1": {"aarch64-apple-darwin": {URL: base + "/valkey-9.1.1-aarch64-apple-darwin.tar.gz", SHA256: "t"}},
+		"0.0.1": {"x": {URL: "https://example.com/elsewhere/thing.tar.gz", SHA256: "u"}},
+	}}
+	rehome(em, base)
+	if got := em.Artifacts["9.1.0"]["aarch64-apple-darwin"]; got.URL != base+"/valkey-9.1.0-aarch64-apple-darwin.tar.gz" || got.SHA256 != "s" {
+		t.Errorf("old-owner entry not rehomed: %+v", got)
+	}
+	if got := em.Artifacts["9.1.1"]["aarch64-apple-darwin"].URL; got != base+"/valkey-9.1.1-aarch64-apple-darwin.tar.gz" {
+		t.Errorf("current entry changed: %s", got)
+	}
+	if got := em.Artifacts["0.0.1"]["x"].URL; got != "https://example.com/elsewhere/thing.tar.gz" {
+		t.Errorf("another release's entry was moved: %s", got)
+	}
+}

@@ -10,6 +10,8 @@ mkdir -p "$out"
 work="$(mktemp -d)"
 cp -R "$staging" "$work/$base"
 tar -C "$work" -czf "$out/$base.tar.gz" "$base"
-( cd "$out" && shasum -a 256 "$base.tar.gz" > "$base.tar.gz.sha256" )
+# sha256sum where shasum is missing (Git Bash on the Windows runners has coreutils, not always perl's shasum).
+sum() { if command -v shasum >/dev/null; then shasum -a 256 "$@"; else sha256sum "$@"; fi; }
+( cd "$out" && sum "$base.tar.gz" > "$base.tar.gz.sha256" )
 rm -rf "$work"
 echo "packaged $out/$base.tar.gz"

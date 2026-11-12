@@ -179,7 +179,13 @@ cmake "$src" \
   -DPLUGIN_OQGRAPH=NO -DPLUGIN_S3=NO -DPLUGIN_DUCKDB=NO \
   $(if [ "${triple#*darwin}" != "$triple" ]; then
       nc="$(brew --prefix ncurses)"
+      # The include path goes on the compiler line too: the client does not add
+      # CURSES_INCLUDE_PATH to its own includes, so <curses.h> resolved to the
+      # SDK's, which from the macOS 15 SDK declares versioned symbols
+      # (vidattr$NCURSES60) that brew's libncurses does not export — the client
+      # failed to link on the macos-15 runner (mariadb 13.0.2, 2026-11-13).
       echo "-DCURSES_INCLUDE_PATH=$nc/include -DCURSES_LIBRARY=$nc/lib/libncurses.dylib"
+      echo "-DCMAKE_C_FLAGS=-I$nc/include -DCMAKE_CXX_FLAGS=-I$nc/include"
     fi)
 
 jobs="$(getconf _NPROCESSORS_ONLN)"

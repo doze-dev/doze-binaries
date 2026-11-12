@@ -121,6 +121,20 @@ check_relocation() {
         fi
       done < <(find "$root/bin" "$root/lib" -type f 2>/dev/null)
       ;;
+    MINGW*|MSYS*|CYGWIN*)
+      # Windows (Git Bash on the runner): every shipped .exe and .dll. A pure-Go
+      # program links only the system's own DLLs, so the check is that each one a
+      # binary names can be found.
+      while IFS= read -r lib; do
+        case "$lib" in *"$RELOC_EXEMPT"*) continue ;; esac
+        n=$((n + 1))
+        if command -v ldd >/dev/null && ldd "$lib" 2>/dev/null | grep -q 'not found'; then
+          echo "  RELOC FAIL: $(basename "$lib") has unresolved deps:"
+          ldd "$lib" 2>/dev/null | grep 'not found'
+          bad=1
+        fi
+      done < <(find "$root/bin" "$root/lib" -type f \( -iname '*.exe' -o -iname '*.dll' \) 2>/dev/null)
+      ;;
   esac
   [ "$bad" = 0 ] || { echo "smoke: relocation check failed — shipped binaries reference paths outside the package, or need a newer OS than the floor"; exit 1; }
   [ "$n" -gt 0 ] || { echo "smoke: relocation check inspected 0 files — the archive has no binaries?"; exit 1; }
@@ -345,8 +359,10 @@ EOF
     # Pure-Go single binary: prove it loads, then actually stand up the bundled
     # dev server (server + SQLite) headless and confirm the frontend accepts a
     # connection on its port.
-    run "$dir/bin/temporal" --version
-    check_version "$archive_version" "$dir/bin/temporal" --version
+    tbin="$dir/bin/temporal"
+    [ -f "$tbin.exe" ] && tbin="$tbin.exe"   # the Windows build
+    run "$tbin" --version
+    check_version "$archive_version" "$tbin" --version
     # Port derived from THIS process, not a constant. The verify sweep boots
     # every published version back to back in one job, and a fixed port meant
     # each boot raced the previous one's teardown: whichever artifact landed on
@@ -356,7 +372,7 @@ EOF
     # time, which is the signature of a flake rather than a bad build. smoke.sh
     # runs once per artifact, so $$ is fresh for every boot.
     port=$(( 20000 + ($$ % 20000) ))
-    "$dir/bin/temporal" server start-dev --headless --ip 127.0.0.1 --port "$port" \
+    "$tbin" server start-dev --headless --ip 127.0.0.1 --port "$port" \
       --db-filename "$work/temporal.db" >"$work/temporal.log" 2>&1 &
     tpid=$!
     ready=0
