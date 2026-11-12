@@ -78,6 +78,17 @@ type engineSpec struct {
 	// major the module's Describe() declares. Default 1 (postgres 16.14.0 →
 	// "16"); temporal declares "1.1", so it sets 2 (1.1.0 → "1.1").
 	MajorParts int `yaml:"major_parts"`
+	// AlsoMajorParts adds more index keys of other depths, each mapping to the
+	// newest full version under it, without removing the MajorParts ones. temporal
+	// keys by "1.8" for doze modules that ask for a line, and by "1" for those that
+	// ask for the newest 1.x (the Rust module, `version = 1`).
+	AlsoMajorParts []int `yaml:"also_major_parts"`
+}
+
+// majorDepths returns every key depth the engine's index carries: MajorParts
+// first, then AlsoMajorParts.
+func (s engineSpec) majorDepths() []int {
+	return append([]int{s.MajorParts}, s.AlsoMajorParts...)
 }
 
 // majorKey returns the index versions key for a full version: its first n
@@ -113,8 +124,20 @@ func (c *config) triplesFor(spec engineSpec) []string {
 // resolution. It is the cumulative catalog of everything that should be
 // published; entries are only ever added.
 type config struct {
-	Triples map[string]string     `yaml:"triples"`
-	Engines map[string]engineSpec `yaml:"engines"`
+	Triples map[string]string `yaml:"triples"`
+	// OptionalTriples are platforms an engine builds only when its own `triples`
+	// names them (Windows: only the pure-Go engines can be built there), each with
+	// its runner. Engines that name no triples never get them.
+	OptionalTriples map[string]string     `yaml:"optional_triples"`
+	Engines         map[string]engineSpec `yaml:"engines"`
+}
+
+// runnerFor returns the GitHub runner that builds triple t, global or optional.
+func (c *config) runnerFor(t string) string {
+	if r, ok := c.Triples[t]; ok {
+		return r
+	}
+	return c.OptionalTriples[t]
 }
 
 func loadConfig() (*config, error) {

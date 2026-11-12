@@ -42,11 +42,11 @@ jobs:
         run: |
           ruby -ryaml -rjson -e 'puts JSON.dump(YAML.load_file("versions.yaml"))' > cfg.json
           matrix="$(jq -c --arg sel "${{ inputs.engines }}" '
-            .triples as $T |
+            .triples as $T | ((.optional_triples // {}) + $T) as $R |
             [ .engines | to_entries[] | .key as $e |
               select($sel == "" or (($sel | gsub(","; " ") | split(" ") | map(select(length > 0))) | index($e) != null)) |
               ((.value.triples // ($T | keys)))[] as $t |
-              {engine: $e, triple: $t, runner: $T[$t]} ]
+              {engine: $e, triple: $t, runner: $R[$t]} ]
             | {include: .}' cfg.json)"
           echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
 
@@ -61,17 +61,17 @@ jobs:
       matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
     steps:
       - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
+        with: { go-version: "stable" }
       - name: Verify every published ${{ matrix.engine }} artifact (${{ matrix.triple }})
+        shell: bash  # the Windows runners default to PowerShell
         run: |
           set -uo pipefail
           engine="${{ matrix.engine }}"; triple="${{ matrix.triple }}"
           base="https://github.com/${{ github.repository }}/releases/download/$engine"
           curl -fsSL "$base/index.yaml" -o index.yaml \
             || { echo "no published index for $engine — nothing to verify"; exit 0; }
-          ruby -ryaml -rjson -e 'puts JSON.dump(YAML.load_file("index.yaml"))' > index.json
-          jq -r --arg e "$engine" --arg t "$triple" \
-            '.engines[$e].artifacts | to_entries[] | select(.value[$t] != null) |
-             [.key, .value[$t].url, .value[$t].sha256] | @tsv' index.json > artifacts.tsv
+          go run ./cmd/dzb artifacts index.yaml "$engine" "$triple" > artifacts.tsv
           chmod +x scripts/*.sh
           mkdir -p listings
           # Published artifacts that misreport their version can never be fixed;
@@ -93,7 +93,7 @@ jobs:
             rm -f ./*.tar.gz
             if ! curl -fsSL "$url" -o "$art" </dev/null; then
               note="download failed"
-            elif [ "$(shasum -a 256 "$art" | awk '{print $1}')" != "$sha" ]; then
+            elif [ "$( (shasum -a 256 "$art" 2>/dev/null || sha256sum "$art") | awk '{print $1}')" != "$sha" ]; then
               note="sha256 mismatch"
             elif ! scripts/smoke.sh "$engine" "$art" "$triple" >smoke.log 2>&1; then
               note="smoke failed"

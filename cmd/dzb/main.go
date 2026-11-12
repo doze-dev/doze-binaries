@@ -19,7 +19,7 @@ import (
 
 func main() {
 	if len(os.Args) < 2 {
-		fatal("usage: dzb <plan|manifest|engines|latest> [args]")
+		fatal("usage: dzb <plan|manifest|engines|latest|artifacts> [args]")
 	}
 	var err error
 	switch os.Args[1] {
@@ -31,8 +31,10 @@ func main() {
 		err = runEngines(os.Args[2:])
 	case "latest":
 		err = runLatest(os.Args[2:])
+	case "artifacts":
+		err = runArtifacts(os.Args[2:])
 	default:
-		fatal("unknown command %q (want plan|manifest|engines|latest)", os.Args[1])
+		fatal("unknown command %q (want plan|manifest|engines|latest|artifacts)", os.Args[1])
 	}
 	if err != nil {
 		fatal("%v", err)

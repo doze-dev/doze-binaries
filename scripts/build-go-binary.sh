@@ -26,9 +26,13 @@ case "$triple" in
   aarch64-*linux*)  export GOOS=linux  GOARCH=arm64 ;;
   x86_64-*darwin*)  export GOOS=darwin GOARCH=amd64 ;;
   aarch64-*darwin*) export GOOS=darwin GOARCH=arm64 ;;
+  x86_64-*windows*)  export GOOS=windows GOARCH=amd64 ;;
+  aarch64-*windows*) export GOOS=windows GOARCH=arm64 ;;
   *) echo "unknown triple: $triple" >&2; exit 1 ;;
 esac
 export CGO_ENABLED=0
+# Windows programs carry .exe; callers name the binary without it, as everywhere else.
+if [ "$GOOS" = windows ] && [ "${out_bin%.exe}" = "$out_bin" ]; then out_bin="$out_bin.exe"; fi
 
 src="$(mktemp -d)/src"
 # Skip LFS smudge: FerretDB stores website/blog images in git-lfs, and

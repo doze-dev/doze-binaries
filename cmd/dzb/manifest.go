@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -120,14 +121,12 @@ func runManifest(args []string) error {
 	// major key depth is per-engine (major_parts): it must match the major the
 	// engine's doze module declares, or resolution misses ("no temporal 1.1").
 	for name, em := range man.Engines {
-		parts := cfg.Engines[name].MajorParts
-		em.Versions = map[string]string{}
+		rehome(em, base)
+		fulls := make([]string, 0, len(em.Artifacts))
 		for full := range em.Artifacts {
-			major := majorKey(full, parts)
-			if cur, ok := em.Versions[major]; !ok || versionLess(cur, full) {
-				em.Versions[major] = full
-			}
+			fulls = append(fulls, full)
 		}
+		em.Versions = majors(fulls, cfg.Engines[name].majorDepths())
 	}
 
 	out, err := yaml.Marshal(man)
@@ -182,4 +181,80 @@ func versionLess(a, b string) bool {
 		}
 	}
 	return false
+}
+
+// majors maps each index key, at every depth in depths, to the newest full
+// version under it.
+func majors(fulls []string, depths []int) map[string]string {
+	out := map[string]string{}
+	for _, parts := range depths {
+		for _, full := range fulls {
+			major := majorKey(full, parts)
+			if cur, ok := out[major]; !ok || versionLess(cur, full) {
+				out[major] = full
+			}
+		}
+	}
+	return out
+}
+
+// runArtifacts prints a published index's artifacts for one engine and triple,
+// one "<full>\t<url>\t<sha256>" line each in version order, for the verify sweep
+// (which used ruby and jq for this; the Windows runners do not all carry them,
+// and one reader of the index shape is better than two).
+func runArtifacts(args []string) error {
+	if len(args) != 3 {
+		return fmt.Errorf("usage: dzb artifacts <index.yaml> <engine> <triple>")
+	}
+	body, err := os.ReadFile(args[0])
+	if err != nil {
+		return err
+	}
+	for _, line := range artifactLines(body, args[1], args[2]) {
+		fmt.Println(line)
+	}
+	return nil
+}
+
+func artifactLines(index []byte, engine, triple string) []string {
+	var idx manifest
+	if yaml.Unmarshal(index, &idx) != nil || idx.Engines[engine] == nil {
+		return nil
+	}
+	var fulls []string
+	for full, triples := range idx.Engines[engine].Artifacts {
+		if _, ok := triples[triple]; ok {
+			fulls = append(fulls, full)
+		}
+	}
+	sort.Slice(fulls, func(i, j int) bool { return versionLess(fulls[i], fulls[j]) })
+	out := make([]string, 0, len(fulls))
+	for _, full := range fulls {
+		a := idx.Engines[engine].Artifacts[full][triple]
+		out = append(out, full+"\t"+a.URL+"\t"+a.SHA256)
+	}
+	return out
+}
+
+// rehome points every entry of this release at base (this repository's release
+// download URL). Entries published before the repository moved from NerdMeNot to
+// doze-dev still named the old owner and resolved only through GitHub's rename
+// redirect, which ends if that name is ever taken. The file and its sha256 are
+// unchanged; only where it is fetched from is corrected. An entry from another
+// release (a different last path segment) is left alone.
+func rehome(em *engineManifest, base string) {
+	release := base[strings.LastIndex(base, "/")+1:]
+	for _, triples := range em.Artifacts {
+		for t, a := range triples {
+			cut := strings.LastIndex(a.URL, "/")
+			if cut < 0 {
+				continue
+			}
+			dir, file := a.URL[:cut], a.URL[cut+1:]
+			if strings.HasSuffix(dir, "/releases/download/"+release) && file != "" {
+				a.URL = base + "/" + file
+				triples[t] = a
+			}
+		}
+	}
 }

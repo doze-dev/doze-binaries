@@ -57,7 +57,7 @@ func runPlan(args []string) error {
 				}
 				include = append(include, matrixItem{
 					Engine: engine, Version: full, Ref: spec.ref(v),
-					Triple: t, Runner: cfg.Triples[t],
+					Triple: t, Runner: cfg.runnerFor(t),
 				})
 			}
 		}
