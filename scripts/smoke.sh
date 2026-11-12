@@ -34,7 +34,19 @@ tar -C "$work" -xzf "$tarball"
 dir="$(find "$work" -maxdepth 1 -mindepth 1 -type d | head -n1)"
 [ -n "$dir" ] && [ -d "$dir/bin" ] || { echo "smoke: no bin/ in $tarball" >&2; exit 1; }
 
-run() { echo "  smoke: $*"; "$@" >/dev/null; }
+# Output is kept quiet on success but printed on failure, with the exit status
+# (a signal shows as 128+N): ferretdb's --version failed now and then on the
+# arm64 runner with nothing in the log to say why. Into a file, not a pipe, so
+# a child that outlives the command can never hold the step open.
+run() {
+  echo "  smoke: $*"
+  local rc=0
+  "$@" >"$work/run.out" 2>&1 || rc=$?
+  [ "$rc" = 0 ] && return
+  echo "smoke: FAILED (exit $rc): $*"
+  tail -20 "$work/run.out"
+  exit 1
+}
 
 # check_relocation fails if any shipped binary or library still points OUTSIDE the
 # package — the failure mode the runtime test alone can miss, because the build
@@ -59,7 +71,12 @@ run() { echo "  smoke: $*"; "$@" >/dev/null; }
 # and cannot be. Exempting an inert path is the honest trade — the alternative is
 # a weekly job that is permanently red for something nothing runs, which teaches
 # everyone to ignore it.
-RELOC_EXEMPT='/lib/pgxs/src/test/'
+#
+# The pattern omits lib/: Postgres installs pgxs under lib/postgresql/ when the
+# prefix names no "postgres" or "pgsql" (documentdb's does not), and the
+# narrower '/lib/pgxs/src/test/' missed exactly those, keeping the documentdb
+# sweep red every week since August.
+RELOC_EXEMPT='/pgxs/src/test/'
 check_relocation() {
   local root="$1" bad=0 lib ref n=0
   case "$(uname -s)" in
