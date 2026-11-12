@@ -25,6 +25,11 @@ permissions:
 # taps (aws/tap, azure/bicep) that our builds never use.
 env:
   HOMEBREW_NO_REQUIRE_TAP_TRUST: "1"
+  # The oldest macOS our archives run on, stated rather than inherited from the
+  # runner (unset, every compiler targets the build machine's own version: kvrocks
+  # once came out needing 14.8). Homebrew's bottles on macos-15 need 15.0, so that
+  # is the floor; smoke.sh fails any Mach-O that needs newer. Ignored on Linux.
+  MACOSX_DEPLOYMENT_TARGET: "15.0"
   # Honoured by `dzb plan` (don't skip) and `dzb manifest` (overwrite). Empty = off.
   DZB_REBUILD: ${{ inputs.rebuild }}
 

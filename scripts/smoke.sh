@@ -77,14 +77,23 @@ run() {
 # narrower '/lib/pgxs/src/test/' missed exactly those, keeping the documentdb
 # sweep red every week since August.
 RELOC_EXEMPT='/pgxs/src/test/'
+# The newest minimum macOS any shipped Mach-O may need (MACOSX_DEPLOYMENT_TARGET
+# in build-engine.yml); archives built for 14 on the old runner pass too.
+MACOS_FLOOR="${MACOSX_DEPLOYMENT_TARGET:-15.0}"
 check_relocation() {
-  local root="$1" bad=0 lib ref n=0
+  local root="$1" bad=0 lib ref n=0 minos
   case "$(uname -s)" in
     Darwin)
       while IFS= read -r lib; do
         case "$lib" in *"$RELOC_EXEMPT"*) continue ;; esac
         file -b "$lib" 2>/dev/null | grep -q 'Mach-O' || continue
         n=$((n + 1))
+        # Needs no newer macOS than the stated floor (build-engine.yml).
+        minos="$(otool -l "$lib" 2>/dev/null | awk '/LC_BUILD_VERSION/{f=1} f&&$1=="minos"{print $2; exit}')"
+        if [ -n "$minos" ] && [ "$(printf '%s\n%s\n' "$minos" "$MACOS_FLOOR" | sort -V | tail -1)" != "$MACOS_FLOOR" ]; then
+          echo "  MINOS FAIL: $(basename "$lib") needs macOS $minos; the floor is $MACOS_FLOOR"
+          bad=1
+        fi
         # A dylib's own LC_ID_DYLIB (its install name, the first otool -L entry)
         # is not a dependency: the runtime loader never consults it, it only
         # matters to someone LINKING against the shipped lib. First-party libs
@@ -113,7 +122,7 @@ check_relocation() {
       done < <(find "$root/bin" "$root/lib" -type f 2>/dev/null)
       ;;
   esac
-  [ "$bad" = 0 ] || { echo "smoke: relocation check failed — shipped binaries reference paths outside the package"; exit 1; }
+  [ "$bad" = 0 ] || { echo "smoke: relocation check failed — shipped binaries reference paths outside the package, or need a newer OS than the floor"; exit 1; }
   [ "$n" -gt 0 ] || { echo "smoke: relocation check inspected 0 files — the archive has no binaries?"; exit 1; }
   echo "  smoke: relocation check ok ($n binaries/libraries inspected)"
 }

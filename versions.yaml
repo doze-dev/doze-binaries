@@ -29,7 +29,10 @@
 triples:
   x86_64-unknown-linux-gnu:  ubuntu-22.04
   aarch64-unknown-linux-gnu: ubuntu-22.04-arm
-  aarch64-apple-darwin:      macos-14
+  # macos-14 was retired by GitHub (Nov 2026). Archives built on it need macOS 14
+  # and stay published; new ones are built on macos-15 and need macOS 15, pinned by
+  # MACOSX_DEPLOYMENT_TARGET in build-engine.yml and checked by smoke.sh.
+  aarch64-apple-darwin:      macos-15
 
 engines:
   # Postgres uses its real upstream version (two-part, e.g. 16.14); the archive
