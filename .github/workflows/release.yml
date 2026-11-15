@@ -55,3 +55,15 @@ jobs:
     with:
       engine: ${{ matrix.engine }}
       rebuild: ${{ inputs.rebuild }}
+
+  # Postgres extension bundles (pgext-<name>-pg<major>, from versions.yaml
+  # `extensions:`). They build against the PUBLISHED postgres tree for their
+  # major, so they wait for the base engines — a postgres major added in the
+  # same push is published first. Run even if some base engine failed: only a
+  # missing postgres tree matters, and the bundle build names it.
+  pgext:
+    needs: engine
+    if: ${{ !cancelled() }}
+    uses: ./.github/workflows/build-pgext.yml
+    with:
+      rebuild: ${{ inputs.rebuild }}

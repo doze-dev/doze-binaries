@@ -94,7 +94,7 @@ func TestRebuildSet(t *testing.T) {
 }
 
 func TestArchiveNameRe(t *testing.T) {
-	re := buildArchiveNameRe([]string{"postgresql", "kvrocks", "documentdb"})
+	re := buildArchiveNameRe([]string{"postgresql", "kvrocks", "documentdb", "temporal"})
 	cases := []struct {
 		name string
 		want []string // prefix, version, triple; nil = no match
@@ -104,6 +104,9 @@ func TestArchiveNameRe(t *testing.T) {
 		// still be found (the reason the version is matched loosely).
 		{"documentdb-0.112-0-x86_64-unknown-linux-gnu.tar.gz", []string{"documentdb", "0.112-0", "x86_64-unknown-linux-gnu"}},
 		{"kvrocks-2.16.0-aarch64-unknown-linux-gnu.tar.gz", []string{"kvrocks", "2.16.0", "aarch64-unknown-linux-gnu"}},
+		// Windows (optional_triples): these were uploaded but never indexed.
+		{"temporal-1.10.0-x86_64-pc-windows-msvc.tar.gz", []string{"temporal", "1.10.0", "x86_64-pc-windows-msvc"}},
+		{"temporal-1.10.0-aarch64-pc-windows-msvc.tar.gz", []string{"temporal", "1.10.0", "aarch64-pc-windows-msvc"}},
 		{"valkey-9.1.0-aarch64-apple-darwin.tar.gz", nil},    // prefix not registered
 		{"postgresql-16.14.0-aarch64-apple-darwin.zip", nil}, // wrong extension
 		{"index.yaml", nil},

@@ -1,0 +1,197 @@
+# Reusable workflow: build every not-yet-published Postgres extension bundle
+# (versions.yaml `extensions:`, expanded by dzb into pgext-<name>-pg<major>
+# engines) and publish each to its own append-only rolling release (tag = the
+# engine key), exactly like the base engines — doze fetches a bundle through
+# the same mirror, index.yaml and digests as postgres itself.
+#
+# One plan and one matrix for all bundles (unlike build-engine.yml's call per
+# engine): there are dozens of bundle engines and each build takes minutes, so
+# a call per engine would mostly spend its time on plan/publish overhead.
+#
+# Bundles build against the PUBLISHED postgres tree for their major (the
+# oldest minor the catalog lists), downloaded and sha256-checked by
+# recipes/pgext/lib.sh — Postgres is never rebuilt here. release.yml runs this
+# after the base engines, so a postgres major added in the same push is
+# published before any bundle needs it.
+name: build-pgext
+
+on:
+  workflow_call:
+    inputs:
+      rebuild:
+        description: >-
+          Comma-separated artifacts to rebuild even though already published
+          ("0.8.7" for every triple of that version, of every engine that has
+          it; "0.8.7:aarch64-apple-darwin" for one triple).
+        required: false
+        type: string
+        default: ""
+
+permissions:
+  contents: write
+
+env:
+  HOMEBREW_NO_REQUIRE_TAP_TRUST: "1"
+  DZB_REBUILD: ${{ inputs.rebuild }}
+
+jobs:
+  plan:
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.plan.outputs.matrix }}
+      has_work: ${{ steps.plan.outputs.has_work }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
+        with:
+          go-version: "stable"
+      # Skips every (bundle, version, triple) already in that bundle engine's
+      # published index — published archives are immutable.
+      - id: plan
+        run: |
+          matrix="$(go run ./cmd/dzb plan --pgext)"
+          echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
+          if [ "$matrix" = '{"include":[]}' ]; then
+            echo "has_work=false" >> "$GITHUB_OUTPUT"
+            echo "No new extension bundles to build."
+          else
+            echo "has_work=true" >> "$GITHUB_OUTPUT"
+            echo "$matrix" | jq -r '.include[] | "\(.engine) \(.version) \(.triple)"'
+          fi
+
+  build:
+    needs: plan
+    if: needs.plan.outputs.has_work == 'true'
+    name: ${{ matrix.engine }} ${{ matrix.version }} (${{ matrix.triple }})
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      # Bundles are small builds (seconds to a few minutes; pgrx ones longer),
+      # so more run at once than a base engine's one-at-a-time.
+      max-parallel: 8
+      matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
+        with:
+          go-version: "stable"
+      # The downloaded Postgres trees (base + newest minor of the major) and,
+      # for pgrx bundles, the compiled cargo-pgrx — both keyed so a catalog
+      # change can't serve a stale tree (the tree is sha256-checked on
+      # download anyway; the cache only skips the download).
+      - uses: actions/cache@v4
+        with:
+          path: ~/.cache/doze-binaries/pgext
+          key: pgext-${{ matrix.triple }}-pg${{ matrix.pg_major }}-${{ hashFiles('versions.yaml', 'recipes/pgext/lib.sh') }}
+          restore-keys: pgext-${{ matrix.triple }}-pg${{ matrix.pg_major }}-
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+          key: cargo-${{ matrix.triple }}-${{ matrix.ext }}-${{ matrix.version }}
+          restore-keys: cargo-${{ matrix.triple }}-
+      # build.sh builds, packages and then verifies the bundle (smoke.sh ->
+      # recipes/pgext/verify.sh): installed into the base-minor and the
+      # newest-minor tree, preloaded, CREATE EXTENSION, smoke query.
+      - name: Build + verify
+        run: |
+          chmod +x scripts/*.sh recipes/*/*.sh
+          recipes/pgext/build.sh "${{ matrix.ext }}" "${{ matrix.version }}" \
+            "${{ matrix.pg_major }}" "${{ matrix.triple }}" dist
+      - uses: actions/upload-artifact@v6
+        with:
+          name: ${{ matrix.engine }}-${{ matrix.version }}-${{ matrix.triple }}
+          path: dist/*
+          if-no-files-found: error
+          retention-days: 7
+
+  publish:
+    needs: [plan, build]
+    # Publish whatever built (append-only), even if some builds failed — and
+    # run with nothing new too: every bundle index is re-signed and the add-on
+    # index regenerated, so a catalog change that builds nothing (a
+    # description, a new note) still reaches doze.
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+      # ed25519, PKCS8 base64 (doze-registry keygen's format): signs every
+      # bundle index and the add-on index (cmd/dzb/sign.go). Without it the
+      # publish fails rather than ship unsigned indexes.
+      DZB_SIGNING_KEY: ${{ secrets.DZB_SIGNING_KEY }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
+        with:
+          go-version: "stable"
+      - if: needs.plan.outputs.has_work == 'true'
+        uses: actions/download-artifact@v8
+        with:
+          pattern: pgext-*
+          path: staging
+          merge-multiple: true
+      # Per bundle engine: merge into its published index.yaml, sign it, gate
+      # parity across the triples just built, then upload. One engine's
+      # failure is reported and the others still publish.
+      - name: Publish each bundle engine to its own release
+        run: |
+          set -uo pipefail
+          chmod +x scripts/*.sh
+          go build -o dzb ./cmd/dzb
+          mkdir -p staging
+          failed=0
+          for engine in $(./dzb engines --pgext | jq -r '.[]'); do
+            shopt -s nullglob
+            archives=(staging/"$engine"-[0-9]*.tar.gz)
+            shopt -u nullglob
+            rm -f existing.idx
+            gh release download "$engine" --pattern index.yaml --output existing.idx 2>/dev/null || true
+            # Never built and nothing new: no release to sign (the add-on
+            # index step below names the gap).
+            [ ${#archives[@]} -gt 0 ] || [ -f existing.idx ] || continue
+            echo "::group::$engine (${#archives[@]} new archives)"
+            dist="dist/$engine"; mkdir -p "$dist"
+            for a in "${archives[@]}"; do
+              cp "$a" "$dist/"
+              [ ! -f "$a.sha256" ] || cp "$a.sha256" "$dist/"
+            done
+            if ! ./dzb manifest "$dist" \
+                 "https://github.com/${{ github.repository }}/releases/download/$engine" \
+                 existing.idx > "$dist/index.yaml.new"; then
+              echo "::error::$engine: manifest failed"; failed=1; echo "::endgroup::"; continue
+            fi
+            mv "$dist/index.yaml.new" "$dist/index.yaml"
+            if ! ./dzb sign "$dist/index.yaml" || ! ./dzb verify-sig "$dist/index.yaml" -; then
+              echo "::error::$engine: signing failed"; failed=1; echo "::endgroup::"; continue
+            fi
+            if [ ${#archives[@]} -gt 0 ]; then
+              if ! scripts/parity.sh "$dist"; then
+                echo "::error::$engine: triples ship different trees — not published"
+                failed=1; echo "::endgroup::"; continue
+              fi
+              gh release create "$engine" \
+                --title "doze $engine extension bundles" \
+                --notes "Prebuilt $engine bundles for doze (macOS + Linux). Append-only mirror; see index.yaml (signed)." \
+                2>/dev/null || true
+            fi
+            gh release upload "$engine" "$dist"/* --clobber || { echo "::error::$engine: upload failed"; failed=1; }
+            echo "::endgroup::"
+          done
+          [ "$failed" = 0 ]
+      # The signed add-on index (cmd/dzb/addons.go): built from the bundle
+      # indexes just published, and refused — the published one left as it was
+      # — when the catalog and the published bundles disagree, so it never
+      # lists an extension doze cannot fetch.
+      - name: Publish the postgres-extensions add-on index
+        run: |
+          set -euo pipefail
+          mkdir -p addons
+          ./dzb addons index --indexes dist > addons/index.yaml
+          ./dzb verify-sig addons/index.yaml -
+          gh release create postgres-extensions \
+            --title "doze postgres-extensions add-on index" \
+            --notes "The signed index of doze's Postgres extensions (index.yaml): metadata, and per release the Postgres majors and an archive per (major, platform). Generated from versions.yaml." \
+            2>/dev/null || true
+          gh release upload postgres-extensions addons/index.yaml --clobber

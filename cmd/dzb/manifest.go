@@ -19,6 +19,9 @@ import (
 type artifact struct {
 	URL    string `yaml:"url"`
 	SHA256 string `yaml:"sha256"`
+	// Sig is base64 ed25519 over the lowercase-hex sha256 (sign.go), added
+	// by dzb sign; dzb manifest writes none.
+	Sig string `yaml:"sig,omitempty"`
 }
 
 // engineManifest mirrors doze's {versions, artifacts} shape for one engine: a
@@ -30,6 +33,8 @@ type engineManifest struct {
 
 type manifest struct {
 	Engines map[string]*engineManifest `yaml:"engines"`
+	// Signature is the document signature (sign.go), added by dzb sign.
+	Signature string `yaml:"signature,omitempty"`
 }
 
 // buildArchiveNameRe compiles the archive-name matcher from the archive prefixes
@@ -37,14 +42,16 @@ type manifest struct {
 // no edit here. It captures archive-prefix, full version, and triple. The version
 // is matched loosely (.+) and the triple is anchored to a known arch+os tail:
 // documentdb's version itself contains a dash (e.g. 0.112-0), so a fixed dotted
-// pattern can't be used and the triple boundary must be pinned instead.
+// pattern can't be used and the triple boundary must be pinned instead. The
+// Windows triples (optional_triples) are in the tail too: without them every
+// Windows archive was uploaded but left out of the index.
 func buildArchiveNameRe(prefixes []string) *regexp.Regexp {
 	quoted := make([]string, len(prefixes))
 	for i, p := range prefixes {
 		quoted[i] = regexp.QuoteMeta(p)
 	}
 	return regexp.MustCompile(`^(` + strings.Join(quoted, "|") +
-		`)-(.+)-((?:aarch64|x86_64)-(?:apple-darwin|unknown-linux-gnu))\.tar\.gz$`)
+		`)-(.+)-((?:aarch64|x86_64)-(?:apple-darwin|unknown-linux-gnu|pc-windows-msvc))\.tar\.gz$`)
 }
 
 // runManifest builds the multi-engine index.yaml. It is CUMULATIVE: if an
@@ -120,7 +127,16 @@ func runManifest(args []string) error {
 	// Recompute each engine's major->newest-full map over the full union. The
 	// major key depth is per-engine (major_parts): it must match the major the
 	// engine's doze module declares, or resolution misses ("no temporal 1.1").
+	// The output is unsigned: the merge changed the document, so the old
+	// signatures are dropped here and dzb sign makes new ones.
+	man.Signature = ""
 	for name, em := range man.Engines {
+		for _, triples := range em.Artifacts {
+			for t, a := range triples {
+				a.Sig = ""
+				triples[t] = a
+			}
+		}
 		rehome(em, base)
 		fulls := make([]string, 0, len(em.Artifacts))
 		for full := range em.Artifacts {

@@ -154,3 +154,301 @@ engines:
       # 1.9.0 was only ever an RC upstream; the 1.9.x nexus/time-skipping tags are previews.
       "1.9.1", "1.10.0",
     ]
+
+# Postgres extensions: doze's first add-on catalog, and its ONLY source of
+# truth. Everything doze knows about an extension is here, once: what to build
+# (repo, ref, versions per major) and what to tell users and the module
+# (description, licence, aliases, preload, settings, requires, …). Nothing is
+# compiled into a module any more, so nothing is hand-synced.
+#
+# Two things are made from it:
+#   - the bundles. Each (extension × Postgres major) becomes its own engine,
+#     keyed pgext-<name>-pg<major> (pgext-vector-pg17), with its own release
+#     and index.yaml — exactly like postgres — so doze's fetcher, digests and
+#     doze.lock pins handle a bundle with no new code. The archive contract
+#     (layout, bundle.json) is doze/docs/design/postgres-extensions.md;
+#     recipes/pgext builds it.
+#   - the signed add-on index, `postgres-extensions` (dzb addons index,
+#     cmd/dzb/addons.go): per extension its metadata, per release the Postgres
+#     majors and an artifact per (major, triple). It lists only what is built
+#     and published, and its build fails when a catalogued (extension, major,
+#     version, triple) has no artifact or an artifact has no catalog entry.
+#
+# Build fields:
+#   repo      upstream git repository.
+#   ref       source-ref template: {v} = version verbatim, {v_} = dots->
+#             underscores, {pg} = the Postgres major. Default "{v}".
+#   subdir    where the Makefile/Cargo.toml lives, if not the repo root.
+#   build     pgxs (default) or pgrx (Rust; cargo-pgrx pinned to the crate's
+#             own pgrx version, read from its Cargo.lock). Anything else goes
+#             through recipes/pgext/<name>/hooks.sh.
+#   pg        majors that every entry in `versions` supports.
+#   versions  the extension's OWN versions, verbatim (0.8.7). The index keys
+#             them two-part (major_parts 2): ResolveMajor("0.8") -> newest 0.8.x.
+#             A major's default line is the two-part key of its newest version.
+#   lines     per-major release lines, for extensions that cut one series per
+#             Postgres major (pgaudit 1.6.x is PG14-only, 17.x is PG17-only).
+#             A major here uses its own versions (and ref) instead of the
+#             top-level ones; it need not appear in `pg`.
+# What the add-on index and bundle.json carry:
+#   wave         rollout wave (1 simple, 2 heavy). Only the waves listed in
+#                extension_waves are built, published and indexed; the others
+#                are modelled here and validated, but stay out of the built set.
+#   description  one line: what it is for.
+#   license      the licence as shipped (SPDX where there is one).
+#   homepage     the upstream project.
+#   aliases      friendlier names for the same extension (pgvector).
+#   preload      libraries that must be in shared_preload_libraries.
+#   may_preload  libraries that MAY be preloaded (a background worker): the
+#                user opts in with settings.shared_preload_libraries.
+#   settings     postgresql.conf settings it needs ({db} = the instance database).
+#   env          server environment ({root} = the bundle's install root).
+#   requires     extensions to CREATE first (catalog or contrib names).
+#   provides     further CREATE EXTENSION names inside the same bundle, each
+#                with what it requires (postgis_raster needs postgis).
+#   note         anything a reader should know (a licence caveat).
+#
+# Bundles build against the OLDEST minor of each major the postgres catalog
+# lists (14.0 … 18.0), downloaded from the published postgres release: modules
+# built against x.0 load on every x.N, not the other way round. A major an
+# extension does not support is simply left out of pg/lines. Postgres has no
+# Windows build, so neither do its extensions: they take the global triples.
+# Wave 1 checked 2026-11-07: every tag exists upstream, and all 50
+# (extension x major) bundles built on aarch64-apple-darwin and passed
+# recipes/pgext/verify.sh against both the x.0 and the newest minor. Linux was
+# smoke-tested on Ubuntu 24.04 arm64 only (7 bundles); CI's 22.04 runners are
+# the real gate for the Linux triples.
+extension_waves: [1]
+extensions:
+  # ── wave 1 ──
+  vector:
+    wave: 1
+    aliases: [pgvector]
+    description: Vector similarity search (HNSW, IVFFlat) for embeddings.
+    license: PostgreSQL
+    homepage: https://github.com/pgvector/pgvector
+    repo: https://github.com/pgvector/pgvector
+    ref: "v{v}"
+    pg: [14, 15, 16, 17, 18]
+    versions: ["0.8.7"]
+  pg_cron:
+    wave: 1
+    description: Cron-style scheduled jobs run inside the database.
+    license: PostgreSQL
+    homepage: https://github.com/citusdata/pg_cron
+    repo: https://github.com/citusdata/pg_cron
+    ref: "v{v}"
+    pg: [14, 15, 16, 17, 18]
+    versions: ["1.6.8"]
+    preload: [pg_cron]
+    settings:
+      cron.database_name: "{db}"
+      # Background workers, not libpq connections: the backend has no TCP.
+      cron.use_background_workers: "on"
+  pg_partman:
+    wave: 1
+    description: Time- and serial-based partition management.
+    license: PostgreSQL
+    homepage: https://github.com/pgpartman/pg_partman
+    repo: https://github.com/pgpartman/pg_partman
+    ref: "v{v}"
+    pg: [14, 15, 16, 17, 18]
+    versions: ["5.5.0"]
+    # No default preload. The optional background worker (pg_partman_bgw)
+    # needs pg_partman_bgw.dbname AND a role to run as — 5.5 defaults
+    # pg_partman_bgw.role to "partman_maintainer", and with that role absent
+    # the worker FATALs on every interval (measured). Without the worker,
+    # run_maintenance_proc() is called by hand or scheduled with pg_cron.
+    may_preload: [pg_partman_bgw]
+  pgmq:
+    wave: 1
+    description: Lightweight message queues, like SQS, in tables.
+    license: PostgreSQL
+    homepage: https://github.com/pgmq/pgmq
+    repo: https://github.com/pgmq/pgmq
+    ref: "v{v}"
+    subdir: pgmq-extension
+    pg: [14, 15, 16, 17, 18]
+    versions: ["1.13.1"]
+  hypopg:
+    wave: 1
+    description: "Hypothetical indexes: see what an index would do without building it."
+    license: PostgreSQL
+    homepage: https://github.com/HypoPG/hypopg
+    repo: https://github.com/HypoPG/hypopg
+    ref: "{v}"
+    pg: [14, 15, 16, 17, 18]
+    versions: ["1.4.5"]
+  pg_hint_plan:
+    wave: 1
+    description: Steer the planner with hints in SQL comments.
+    license: BSD-3-Clause
+    homepage: https://github.com/ossc-db/pg_hint_plan
+    repo: https://github.com/ossc-db/pg_hint_plan
+    ref: "REL{pg}_{v_}"
+    # Hints are only honoured once the library is loaded; preloading is what
+    # makes them "just work" (CREATE EXTENSION alone adds only the hint table).
+    preload: [pg_hint_plan]
+    lines:
+      14: { versions: ["1.4.5"] }
+      15: { versions: ["1.5.4"] }
+      16: { versions: ["1.6.3"] }
+      17: { versions: ["1.7.2"] }
+      18: { versions: ["1.8.1"] }
+  pg_repack:                    # ships the pg_repack client in bin/
+    wave: 1
+    description: Rebuild bloated tables and indexes online (with the pg_repack CLI).
+    license: BSD-3-Clause
+    homepage: https://github.com/reorg/pg_repack
+    repo: https://github.com/reorg/pg_repack
+    ref: "ver_{v}"
+    pg: [14, 15, 16, 17, 18]
+    versions: ["1.5.3"]
+  pgaudit:
+    wave: 1
+    description: Session and object audit logging.
+    license: PostgreSQL
+    homepage: https://github.com/pgaudit/pgaudit
+    repo: https://github.com/pgaudit/pgaudit
+    ref: "{v}"
+    preload: [pgaudit]
+    lines:
+      14: { versions: ["1.6.3"] }
+      15: { versions: ["1.7.1"] }
+      16: { versions: ["16.1"] }
+      17: { versions: ["17.1"] }
+      18: { versions: ["18.0"] }
+  pg_ivm:
+    wave: 1
+    description: Incrementally maintained materialized views.
+    license: PostgreSQL
+    homepage: https://github.com/sraoss/pg_ivm
+    repo: https://github.com/sraoss/pg_ivm
+    ref: "v{v}"
+    pg: [14, 15, 16, 17, 18]
+    versions: ["1.17"]
+    preload: [pg_ivm]
+  pg_jsonschema:
+    wave: 1
+    description: JSON Schema validation for json and jsonb.
+    license: Apache-2.0
+    homepage: https://github.com/supabase/pg_jsonschema
+    repo: https://github.com/supabase/pg_jsonschema
+    ref: "v{v}"
+    build: pgrx
+    pg: [14, 15, 16, 17, 18]
+    versions: ["0.3.4"]
+
+  # ── wave 2: modelled, not built ──
+  # Not in extension_waves, so dzb expands no engines for these and the add-on
+  # index leaves them out: doze cannot offer what was never built. Tags checked
+  # upstream 2026-11-15. Most need a recipes/pgext/<name>/hooks.sh before they
+  # can build (postgis: autotools + GEOS/PROJ/GDAL; h3, pgrouting, timescaledb:
+  # CMake; pg_duckdb: the DuckDB submodule), and every one a smoke.sql. The
+  # licences are the owner's call before any ships (pg_search is AGPL-3.0).
+  postgis:
+    wave: 2
+    description: Geographic objects, spatial indexes and functions.
+    license: GPL-2.0-or-later
+    homepage: https://postgis.net
+    repo: https://github.com/postgis/postgis
+    ref: "{v}"
+    pg: [14, 15, 16, 17, 18]
+    versions: ["3.6.4"]
+    provides:
+      postgis_raster: [postgis]
+      postgis_topology: [postgis]
+      postgis_tiger_geocoder: [postgis, fuzzystrmatch]
+      address_standardizer: []
+      address_standardizer_data_us: [address_standardizer]
+    env:
+      PROJ_DATA: "{root}/share/proj"
+      GDAL_DATA: "{root}/share/gdal"
+  h3:
+    wave: 2
+    description: Uber's H3 hexagonal grid indexing (h3_postgis bridges to PostGIS).
+    license: Apache-2.0
+    homepage: https://github.com/zachasme/h3-pg
+    repo: https://github.com/zachasme/h3-pg
+    ref: "v{v}"
+    pg: [14, 15, 16, 17, 18]
+    versions: ["4.2.3"]
+    provides:
+      h3_postgis: [h3, postgis]
+  pgrouting:
+    wave: 2
+    description: Shortest-path and network routing on PostGIS.
+    license: GPL-2.0-or-later
+    homepage: https://pgrouting.org
+    repo: https://github.com/pgRouting/pgrouting
+    ref: "v{v}"
+    pg: [14, 15, 16, 17, 18]
+    versions: ["3.8.0"]
+    requires: [postgis]
+  timescaledb:
+    wave: 2
+    aliases: [timescale]
+    description: Time-series hypertables and time_bucket.
+    license: Apache-2.0
+    homepage: https://github.com/timescale/timescaledb
+    repo: https://github.com/timescale/timescaledb
+    ref: "{v}"
+    pg: [15, 16, 17, 18]
+    versions: ["2.31.0"]
+    preload: [timescaledb]
+    settings:
+      timescaledb.telemetry_level: "off"
+      timescaledb.license: apache
+    note: >-
+      The Apache-only build: hypertables and time_bucket; no compression,
+      continuous aggregates or retention policies (those are under the
+      Timescale License).
+  pg_search:
+    wave: 2
+    description: BM25 full-text search (ParadeDB).
+    license: AGPL-3.0
+    homepage: https://github.com/paradedb/paradedb
+    repo: https://github.com/paradedb/paradedb
+    ref: "v{v}"
+    subdir: pg_search
+    build: pgrx
+    pg: [15, 16, 17, 18]
+    versions: ["0.20.11"]
+    preload: [pg_search]
+  pg_duckdb:
+    wave: 2
+    description: "DuckDB inside Postgres: fast analytics, Parquet and Iceberg."
+    license: MIT
+    homepage: https://github.com/duckdb/pg_duckdb
+    repo: https://github.com/duckdb/pg_duckdb
+    ref: "v{v}"
+    pg: [14, 15, 16, 17, 18]
+    versions: ["1.1.1"]
+    preload: [pg_duckdb]
+  vectorscale:
+    wave: 2
+    aliases: [pgvectorscale]
+    description: DiskANN indexes for pgvector at scale.
+    license: PostgreSQL
+    homepage: https://github.com/timescale/pgvectorscale
+    repo: https://github.com/timescale/pgvectorscale
+    ref: "{v}"
+    subdir: pgvectorscale
+    build: pgrx
+    pg: [18]
+    versions: ["0.9.1"]
+    requires: [vector]
+  age:
+    wave: 2
+    aliases: [apache_age]
+    description: Graph database with openCypher queries (Apache AGE).
+    license: Apache-2.0
+    homepage: https://age.apache.org
+    repo: https://github.com/apache/age
+    # AGE tags one release per Postgres major ("PG16/v1.5.0-rc0" is the
+    # release; there is no non-rc tag). Upstream has no PG18 tag yet, so 18 is
+    # left out (the module catalog listed it).
+    ref: "PG{pg}/v{v}-rc0"
+    may_preload: [age]
+    pg: [14, 15, 16, 17]
+    versions: ["1.6.0"]
