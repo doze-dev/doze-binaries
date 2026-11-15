@@ -116,7 +116,12 @@ jobs:
             --title "doze ${{ inputs.engine }} binaries" \
             --notes "Prebuilt ${{ inputs.engine }} binaries for doze (macOS + Linux). Append-only mirror; see index.yaml." \
             2>/dev/null || true
-      - name: Assemble dist + cumulative manifest
+      - name: Assemble dist + cumulative manifest, signed
+        env:
+          # ed25519, PKCS8 base64 (doze-registry keygen's format). The index
+          # is signed whole and per artifact (cmd/dzb/sign.go); without the
+          # secret the publish fails rather than ship an unsigned index.
+          DZB_SIGNING_KEY: ${{ secrets.DZB_SIGNING_KEY }}
         run: |
           mkdir -p dist
           cp staging/* dist/ 2>/dev/null || true   # staging may be empty if all builds failed
@@ -127,6 +132,8 @@ jobs:
           go run ./cmd/dzb manifest dist \
             "https://github.com/${{ github.repository }}/releases/download/${{ inputs.engine }}" \
             existing.idx > dist/index.yaml
+          go run ./cmd/dzb sign dist/index.yaml
+          go run ./cmd/dzb verify-sig dist/index.yaml -
           ls -l dist
       # Cross-triple parity, checked BEFORE anything is uploaded. A published
       # archive is immutable, so a version that ships different trees on

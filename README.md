@@ -68,7 +68,7 @@ recipes/pgext/             Postgres extension bundles (see below):
   release.yml                push/dispatch -> one build-engine call per engine
   build-engine.yml           reusable: plan -> build matrix -> publish (per engine)
   build-pgext.yml            reusable: the same for every extension bundle
-  verify.yml                 weekly: re-smoke every PUBLISHED artifact
+  verify.yml                 weekly: re-smoke every PUBLISHED artifact (and its signature)
   ci.yml                     PR checks: dzb tests, shell lint, one recipe build
 ```
 
@@ -104,6 +104,39 @@ engines:
 (The schema is multi-engine so a combined manifest also validates, but each
 release ships only its own engine's slice.)
 
+### Signed indexes
+
+Every published index is signed, the way the module registry signs a module
+index (doze-sdk `modindex`, doze-registry `scripts/lib.mjs`): `dzb sign` adds a
+`sig` to each artifact — base64 ed25519 over its lowercase-hex sha256 — and a
+document `signature`: base64 ed25519 over the lowercase-hex SHA-256 of the
+document's canonical JSON. The canonical JSON is the whole document as parsed
+from YAML, minus the top-level `signature`: keys sorted at every level, no
+whitespace, no HTML escaping. A verifier needs no schema: parse generically,
+drop `signature`, serialise, check. Values are kept to strings, integers,
+booleans, lists and maps (strings without control characters or U+2028/9), so
+every language serialises them the same; `dzb` refuses anything else.
+
+The key is the `DZB_SIGNING_KEY` secret (ed25519, PKCS8 DER base64 — the format
+doze-registry's keygen writes); publishing fails without it. `dzb pubkey`
+prints its public half for doze to embed, `dzb verify-sig <index> <pubkey>`
+checks an index the way doze will, and the weekly sweep checks every published
+index once the `DZB_PUBLIC_KEY` repository variable is set.
+
+```yaml
+engines:
+  pgext-vector-pg17:
+    versions:
+      "0.8": 0.8.7
+    artifacts:
+      0.8.7:
+        aarch64-apple-darwin:
+          url: https://.../pgext-vector-pg17-0.8.7-aarch64-apple-darwin.tar.gz
+          sha256: 4527...854e
+          sig: u4J0...ADBg==
+signature: "JZQ3...MCg=="
+```
+
 ## Postgres extension bundles
 
 `versions.yaml`'s `extensions:` lists each extension once; `dzb` expands every
@@ -138,6 +171,53 @@ ad-hoc signed on macOS), `bundle.json` — is
 - **Rust (pgrx)**: cargo-pgrx is pinned to the version in the crate's own
   `Cargo.lock`, built once with the pinned Rust toolchain into
   `~/.cache/doze-binaries/pgext/pgrx/` (CI caches it).
+
+### The catalog and the add-on index
+
+`extensions:` is the only place doze describes an extension: the build fields
+above, and what users and the module need — `wave`, `description`,
+`license`, `homepage`, `aliases`, `preload`, `may_preload`, `settings`,
+`env`, `requires`, `provides`, `note`. Nothing is compiled into a module.
+`extension_waves` lists the waves that are built; entries of other waves are
+modelled and validated but expand into no engine.
+
+`dzb addons index` publishes the catalog as the signed `postgres-extensions`
+add-on index (`…/releases/download/postgres-extensions/index.yaml`), built by
+the publish job from the bundle indexes it just signed:
+
+```yaml
+schema: 1
+index: postgres-extensions
+engine: postgres
+noun: extension
+addons:
+  pgaudit:
+    wave: 1
+    description: Session and object audit logging.
+    license: PostgreSQL
+    homepage: https://github.com/pgaudit/pgaudit
+    lines: {"14": "1.6", "15": "1.7", "16": "16.1", "17": "17.1", "18": "18.0"}
+    majors: ["14", "15", "16", "17", "18"]
+    preload: [pgaudit]
+    releases:
+      "17.1":
+        engines: ["17"]
+        artifacts:
+          "17": {aarch64-apple-darwin: {url, sha256, sig}, …}
+    channels: {stable: "18.0"}
+signature: "…"
+```
+
+`line` is the default line (the newest top-level version's two-part key) and
+`lines` a major's own line where it has one: a major resolves to
+`lines[major]`, else `line`. The index lists only what is published, and is
+never published when the two disagree: `dzb addons index` fails on a
+catalogued (extension, major, version, triple) with no artifact, and on an
+artifact for a version or triple the catalog does not build. `dzb addons
+check` (CI, every PR) is the offline half: every built extension has a
+`recipes/pgext/<name>/smoke.sql`, every `recipes/pgext/<dir>` has a catalog
+entry, names, aliases and provided names are unique, and a built extension
+requires only built ones, for every major it is built for.
 
 Adding an extension: an entry in `extensions:` plus
 `recipes/pgext/<name>/smoke.sql`; a `hooks.sh` only when the standard PGXS or

@@ -34,6 +34,9 @@ jobs:
           go run ./cmd/dzb plan >/dev/null
           go run ./cmd/dzb plan --pgext >/dev/null
           go run ./cmd/dzb verify-plan >/dev/null
+          # Catalog <-> recipes: a built extension with no smoke test, or a
+          # recipe with no catalog entry, fails here.
+          go run ./cmd/dzb addons check
           go run ./cmd/dzb manifest /nonexistent https://example.com >/dev/null 2>&1 || true
       - name: Shell-lint recipes + scripts
         run: |
@@ -63,14 +66,17 @@ jobs:
           # Extension bundles: a change to one extension's own files smokes that
           # extension on its newest major; a change to the shared machinery
           # (lib.sh, build.sh, verify.sh) smokes one bundle per code path —
-          # plain PGXS, vendored libpq + preload, a shipped client binary, and
-          # pgrx on PG18 (where the bundle installs into its own folder).
+          # plain PGXS, vendored libpq + preload, a per-major release line, a
+          # shipped client binary, and pgrx — each of the first three on 17
+          # (copied into the tree) and on 18 (its own folder, joined through
+          # extension_control_path).
           for ext in $(echo "$changed" | grep -E '^recipes/pgext/[^/]+/' | cut -d/ -f3 | sort -u); do
             last="$(go run ./cmd/dzb engines --pgext | jq -r --arg e "$ext" '[.[] | select(startswith("pgext-" + $e + "-pg"))] | last // empty')"
             engines="$engines $last"
           done
           if echo "$changed" | grep -qE '^recipes/pgext/[^/]+\.sh$'; then
-            engines="$engines pgext-vector-pg17 pgext-pg_cron-pg17 pgext-pg_repack-pg17 pgext-pg_jsonschema-pg18"
+            engines="$engines pgext-vector-pg17 pgext-vector-pg18 pgext-pg_cron-pg17 pgext-pg_cron-pg18"
+            engines="$engines pgext-pgaudit-pg17 pgext-pgaudit-pg18 pgext-pg_repack-pg17 pgext-pg_jsonschema-pg18"
           fi
           # A change to shared scripts/ or the catalog affects packaging for all —
           # smoke one fast engine (valkey) as a representative packaging check.

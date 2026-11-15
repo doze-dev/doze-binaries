@@ -68,6 +68,11 @@ jobs:
         with: { go-version: "stable" }
       - name: Verify every published ${{ matrix.name }} artifact (${{ matrix.triple }})
         shell: bash  # the Windows runners default to PowerShell
+        env:
+          # The public half of DZB_SIGNING_KEY (dzb pubkey), set as a repository
+          # variable once the indexes are signed; while unset, signatures are
+          # not checked (the older indexes carry none).
+          DZB_PUBLIC_KEY: ${{ vars.DZB_PUBLIC_KEY }}
         run: |
           set -uo pipefail
           triple="${{ matrix.triple }}"
@@ -87,6 +92,11 @@ jobs:
           echo "## verify: $engine ($triple)" >> "$GITHUB_STEP_SUMMARY"
           echo "| version | result |" >> "$GITHUB_STEP_SUMMARY"
           echo "|---|---|" >> "$GITHUB_STEP_SUMMARY"
+          if [ -n "${DZB_PUBLIC_KEY:-}" ] && ! go run ./cmd/dzb verify-sig index.yaml "$DZB_PUBLIC_KEY"; then
+            echo "::error::$engine: index.yaml signature check failed"
+            echo "| (index) | signature check failed |" >> "$GITHUB_STEP_SUMMARY"
+            total=$((total + 1)); failed=$((failed + 1))
+          fi
           while IFS=$'\t' read -r -u9 ver url sha; do
             total=$((total + 1))
             note="ok"

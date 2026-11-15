@@ -19,6 +19,9 @@ import (
 type artifact struct {
 	URL    string `yaml:"url"`
 	SHA256 string `yaml:"sha256"`
+	// Sig is base64 ed25519 over the lowercase-hex sha256 (sign.go), added
+	// by dzb sign; dzb manifest writes none.
+	Sig string `yaml:"sig,omitempty"`
 }
 
 // engineManifest mirrors doze's {versions, artifacts} shape for one engine: a
@@ -30,6 +33,8 @@ type engineManifest struct {
 
 type manifest struct {
 	Engines map[string]*engineManifest `yaml:"engines"`
+	// Signature is the document signature (sign.go), added by dzb sign.
+	Signature string `yaml:"signature,omitempty"`
 }
 
 // buildArchiveNameRe compiles the archive-name matcher from the archive prefixes
@@ -122,7 +127,16 @@ func runManifest(args []string) error {
 	// Recompute each engine's major->newest-full map over the full union. The
 	// major key depth is per-engine (major_parts): it must match the major the
 	// engine's doze module declares, or resolution misses ("no temporal 1.1").
+	// The output is unsigned: the merge changed the document, so the old
+	// signatures are dropped here and dzb sign makes new ones.
+	man.Signature = ""
 	for name, em := range man.Engines {
+		for _, triples := range em.Artifacts {
+			for t, a := range triples {
+				a.Sig = ""
+				triples[t] = a
+			}
+		}
 		rehome(em, base)
 		fulls := make([]string, 0, len(em.Artifacts))
 		for full := range em.Artifacts {

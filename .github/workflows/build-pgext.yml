@@ -109,58 +109,89 @@ jobs:
 
   publish:
     needs: [plan, build]
-    # Publish whatever built (append-only), even if some builds failed.
-    if: ${{ !cancelled() && needs.plan.outputs.has_work == 'true' }}
+    # Publish whatever built (append-only), even if some builds failed — and
+    # run with nothing new too: every bundle index is re-signed and the add-on
+    # index regenerated, so a catalog change that builds nothing (a
+    # description, a new note) still reaches doze.
+    if: ${{ !cancelled() }}
     runs-on: ubuntu-latest
     env:
       GH_TOKEN: ${{ github.token }}
+      # ed25519, PKCS8 base64 (doze-registry keygen's format): signs every
+      # bundle index and the add-on index (cmd/dzb/sign.go). Without it the
+      # publish fails rather than ship unsigned indexes.
+      DZB_SIGNING_KEY: ${{ secrets.DZB_SIGNING_KEY }}
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-go@v6
         with:
           go-version: "stable"
-      - uses: actions/download-artifact@v8
+      - if: needs.plan.outputs.has_work == 'true'
+        uses: actions/download-artifact@v8
         with:
           pattern: pgext-*
           path: staging
           merge-multiple: true
-      # Per bundle engine: merge into its published index.yaml, gate parity
-      # across the triples just built, then upload. One engine's failure is
-      # reported and the others still publish.
+      # Per bundle engine: merge into its published index.yaml, sign it, gate
+      # parity across the triples just built, then upload. One engine's
+      # failure is reported and the others still publish.
       - name: Publish each bundle engine to its own release
         run: |
           set -uo pipefail
           chmod +x scripts/*.sh
           go build -o dzb ./cmd/dzb
+          mkdir -p staging
           failed=0
           for engine in $(./dzb engines --pgext | jq -r '.[]'); do
             shopt -s nullglob
             archives=(staging/"$engine"-[0-9]*.tar.gz)
             shopt -u nullglob
-            [ ${#archives[@]} -gt 0 ] || continue
-            echo "::group::$engine (${#archives[@]} archives)"
+            rm -f existing.idx
+            gh release download "$engine" --pattern index.yaml --output existing.idx 2>/dev/null || true
+            # Never built and nothing new: no release to sign (the add-on
+            # index step below names the gap).
+            [ ${#archives[@]} -gt 0 ] || [ -f existing.idx ] || continue
+            echo "::group::$engine (${#archives[@]} new archives)"
             dist="dist/$engine"; mkdir -p "$dist"
             for a in "${archives[@]}"; do
               cp "$a" "$dist/"
               [ ! -f "$a.sha256" ] || cp "$a.sha256" "$dist/"
             done
-            gh release create "$engine" \
-              --title "doze $engine extension bundles" \
-              --notes "Prebuilt $engine bundles for doze (macOS + Linux). Append-only mirror; see index.yaml." \
-              2>/dev/null || true
-            rm -f existing.idx
-            gh release download "$engine" --pattern index.yaml --output existing.idx 2>/dev/null || true
             if ! ./dzb manifest "$dist" \
                  "https://github.com/${{ github.repository }}/releases/download/$engine" \
                  existing.idx > "$dist/index.yaml.new"; then
               echo "::error::$engine: manifest failed"; failed=1; echo "::endgroup::"; continue
             fi
             mv "$dist/index.yaml.new" "$dist/index.yaml"
-            if ! scripts/parity.sh "$dist"; then
-              echo "::error::$engine: triples ship different trees — not published"
-              failed=1; echo "::endgroup::"; continue
+            if ! ./dzb sign "$dist/index.yaml" || ! ./dzb verify-sig "$dist/index.yaml" -; then
+              echo "::error::$engine: signing failed"; failed=1; echo "::endgroup::"; continue
+            fi
+            if [ ${#archives[@]} -gt 0 ]; then
+              if ! scripts/parity.sh "$dist"; then
+                echo "::error::$engine: triples ship different trees — not published"
+                failed=1; echo "::endgroup::"; continue
+              fi
+              gh release create "$engine" \
+                --title "doze $engine extension bundles" \
+                --notes "Prebuilt $engine bundles for doze (macOS + Linux). Append-only mirror; see index.yaml (signed)." \
+                2>/dev/null || true
             fi
             gh release upload "$engine" "$dist"/* --clobber || { echo "::error::$engine: upload failed"; failed=1; }
             echo "::endgroup::"
           done
           [ "$failed" = 0 ]
+      # The signed add-on index (cmd/dzb/addons.go): built from the bundle
+      # indexes just published, and refused — the published one left as it was
+      # — when the catalog and the published bundles disagree, so it never
+      # lists an extension doze cannot fetch.
+      - name: Publish the postgres-extensions add-on index
+        run: |
+          set -euo pipefail
+          mkdir -p addons
+          ./dzb addons index --indexes dist > addons/index.yaml
+          ./dzb verify-sig addons/index.yaml -
+          gh release create postgres-extensions \
+            --title "doze postgres-extensions add-on index" \
+            --notes "The signed index of doze's Postgres extensions (index.yaml): metadata, and per release the Postgres majors and an archive per (major, platform). Generated from versions.yaml." \
+            2>/dev/null || true
+          gh release upload postgres-extensions addons/index.yaml --clobber
