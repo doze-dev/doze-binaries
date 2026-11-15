@@ -31,7 +31,7 @@ Intel macOS is not supported):
 |---|---|
 | `x86_64-unknown-linux-gnu` | `ubuntu-22.04` |
 | `aarch64-unknown-linux-gnu` | `ubuntu-22.04-arm` |
-| `aarch64-apple-darwin` | `macos-14` |
+| `aarch64-apple-darwin` | `macos-15` |
 
 > **glibc floor.** Linux binaries link the system glibc dynamically, so they
 > require a glibc at least as new as the build runner's (Ubuntu 22.04 → glibc
@@ -59,10 +59,15 @@ scripts/                   shell, for orchestrating CLIs:
   bundle-linux-deps.sh       copy non-system .so + patchelf rpath
   bundle-macos-deps.sh       install_name_tool relocation + ad-hoc codesign
 recipes/<engine>/build.sh  build one (version, triple) into an archive
+recipes/pgext/             Postgres extension bundles (see below):
+  build.sh, lib.sh           build one (extension, version, major, triple)
+  verify.sh                  install into the Postgres tree, CREATE EXTENSION
+  <name>/smoke.sql|hooks.sh  per-extension smoke query and build hooks
                            (documentdb splits its build across several files)
 .github/workflows/
   release.yml                push/dispatch -> one build-engine call per engine
   build-engine.yml           reusable: plan -> build matrix -> publish (per engine)
+  build-pgext.yml            reusable: the same for every extension bundle
   verify.yml                 weekly: re-smoke every PUBLISHED artifact
   ci.yml                     PR checks: dzb tests, shell lint, one recipe build
 ```
@@ -98,6 +103,46 @@ engines:
 
 (The schema is multi-engine so a combined manifest also validates, but each
 release ships only its own engine's slice.)
+
+## Postgres extension bundles
+
+`versions.yaml`'s `extensions:` lists each extension once; `dzb` expands every
+(extension, Postgres major) into an engine keyed `pgext-<name>-pg<major>`
+(`pgext-vector-pg17`), with its own release, `index.yaml` and two-part majors
+(`0.8` -> newest 0.8.x). doze fetches a bundle exactly as it fetches postgres.
+The archive contract — `bin/` (a `.keep` if empty), `share/extension/`, `lib/`
+with the module and its vendored libraries (rpath `$ORIGIN` / `@loader_path`,
+ad-hoc signed on macOS), `bundle.json` — is
+`doze/docs/design/postgres-extensions.md`.
+
+- **Built against our own Postgres**: the published archive of the major's
+  OLDEST catalogued minor (14.0 … 18.0), downloaded and sha256-checked, through
+  its `pg_config`/PGXS. A module built against x.0 loads on every x.N; the
+  reverse is not guaranteed. Never a system or Homebrew Postgres.
+- **Vendored libraries include ones the tree ships** (pg_cron and pg_repack
+  link libpq, hence libssl/libcrypto): from PG18 doze installs a bundle in a
+  folder of its own, so it must stand alone. Installing into a PG14–17 tree
+  must not overwrite the tree's own copies; `@loader_path/libpq…` then
+  resolves to the tree's.
+- **Verified** (`recipes/pgext/verify.sh`, run by `smoke.sh` at build time and
+  weekly): installed into the base-minor AND newest-minor tree — copied in for
+  PG14–17; on PG18 left in its own folder with
+  `extension_control_path = '<root>/share:$system'` (Postgres appends
+  `/extension`) and `dynamic_library_path = '<root>/lib:$libdir'`, bundles first as the module writes them — then
+  started with the bundle's preload and settings, `CREATE EXTENSION` (its
+  `requires` first) and `recipes/pgext/<name>/smoke.sql`.
+- **macOS**: the trees' PGXS flags name the CI runner's SDK, so builds override
+  `PG_SYSROOT` (and give pgrx a `pg_config` shim), and the deployment target
+  is the tree's own (`minos 14.0`) — otherwise clang targets the build Mac's
+  OS and the bundle refuses to load on older ones.
+- **Rust (pgrx)**: cargo-pgrx is pinned to the version in the crate's own
+  `Cargo.lock`, built once with the pinned Rust toolchain into
+  `~/.cache/doze-binaries/pgext/pgrx/` (CI caches it).
+
+Adding an extension: an entry in `extensions:` plus
+`recipes/pgext/<name>/smoke.sql`; a `hooks.sh` only when the standard PGXS or
+pgrx build doesn't fit. Locally: `recipes/pgext/build.sh vector 0.8.7 17
+aarch64-apple-darwin dist` (`PGEXT_SKIP_DEPS=1` skips brew/apt).
 
 ## Using it from doze
 
