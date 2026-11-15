@@ -37,14 +37,16 @@ type manifest struct {
 // no edit here. It captures archive-prefix, full version, and triple. The version
 // is matched loosely (.+) and the triple is anchored to a known arch+os tail:
 // documentdb's version itself contains a dash (e.g. 0.112-0), so a fixed dotted
-// pattern can't be used and the triple boundary must be pinned instead.
+// pattern can't be used and the triple boundary must be pinned instead. The
+// Windows triples (optional_triples) are in the tail too: without them every
+// Windows archive was uploaded but left out of the index.
 func buildArchiveNameRe(prefixes []string) *regexp.Regexp {
 	quoted := make([]string, len(prefixes))
 	for i, p := range prefixes {
 		quoted[i] = regexp.QuoteMeta(p)
 	}
 	return regexp.MustCompile(`^(` + strings.Join(quoted, "|") +
-		`)-(.+)-((?:aarch64|x86_64)-(?:apple-darwin|unknown-linux-gnu))\.tar\.gz$`)
+		`)-(.+)-((?:aarch64|x86_64)-(?:apple-darwin|unknown-linux-gnu|pc-windows-msvc))\.tar\.gz$`)
 }
 
 // runManifest builds the multi-engine index.yaml. It is CUMULATIVE: if an
