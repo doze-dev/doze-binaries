@@ -20,14 +20,22 @@ engines:
     versions: ["16.0", "16.9", "16.14", "17.1", "17.0", "17.11", "18.0"]
   valkey:
     versions: ["9.0.0"]
+extension_waves: [1]
 extensions:
   vector:
+    wave: 1
+    description: Vector similarity search.
+    homepage: https://github.com/pgvector/pgvector
+    aliases: [pgvector]
     repo: https://github.com/pgvector/pgvector
     ref: "v{v}"
     license: PostgreSQL
     pg: [16, 17]
     versions: ["0.8.6", "0.8.7"]
   pg_cron:
+    wave: 1
+    description: Cron jobs.
+    homepage: https://github.com/citusdata/pg_cron
     repo: https://github.com/citusdata/pg_cron
     ref: "v{v}"
     license: PostgreSQL
@@ -36,6 +44,9 @@ extensions:
     preload: [pg_cron]
     settings: { cron.database_name: "{db}" }
   pg_hint_plan:
+    wave: 1
+    description: Planner hints.
+    homepage: https://github.com/ossc-db/pg_hint_plan
     repo: https://github.com/ossc-db/pg_hint_plan
     ref: "REL{pg}_{v_}"
     license: BSD-3-Clause
@@ -43,12 +54,24 @@ extensions:
       16: { versions: ["1.6.3"] }
       17: { versions: ["1.7.1", "1.7.2"] }
   pgaudit:
+    wave: 1
+    description: Audit logging.
+    homepage: https://github.com/pgaudit/pgaudit
     repo: https://github.com/pgaudit/pgaudit
     license: PostgreSQL
     pg: [18]
     versions: ["18.0"]
     lines:
       17: { versions: ["17.1"], ref: "REL_17_{v}" }
+  postgis:                      # wave 2: modelled, never expanded
+    wave: 2
+    description: Spatial.
+    homepage: https://postgis.net
+    repo: https://github.com/postgis/postgis
+    license: GPL-2.0-or-later
+    pg: [16, 17]
+    versions: ["3.6.4"]
+    provides: { postgis_raster: [postgis], address_standardizer: [] }
 `
 
 func mustConfig(t *testing.T, y string) *config {
@@ -106,20 +129,36 @@ func TestExpandExtensions(t *testing.T) {
 
 func TestExpandExtensionsRejects(t *testing.T) {
 	base := "triples: {aarch64-apple-darwin: macos-15}\nengines:\n  postgres: {versions: [\"17.0\"]}\n"
-	cases := map[string]string{
-		"no repo":         "extensions:\n  x: {license: MIT, pg: [17], versions: [\"1.0\"]}\n",
-		"no license":      "extensions:\n  x: {repo: r, pg: [17], versions: [\"1.0\"]}\n",
-		"no majors":       "extensions:\n  x: {repo: r, license: MIT, versions: [\"1.0\"]}\n",
-		"no versions":     "extensions:\n  x: {repo: r, license: MIT, pg: [17]}\n",
-		"unknown major":   "extensions:\n  x: {repo: r, license: MIT, pg: [12], versions: [\"1.0\"]}\n",
-		"bad build":       "extensions:\n  x: {repo: r, license: MIT, pg: [17], versions: [\"1.0\"], build: cmake}\n",
-		"empty line":      "extensions:\n  x: {repo: r, license: MIT, lines: {17: {versions: []}}}\n",
-		"reserved engine": "  pgext-x-pg17: {versions: [\"1.0\"]}\n",
+	// Every case is valid but for the one thing it names, so each proves its
+	// own check (meta = the descriptive fields every entry needs).
+	const meta = "wave: 1, description: d, homepage: h, "
+	ok := "extension_waves: [1]\nextensions:\n  x: {" + meta + "repo: r, license: MIT, pg: [17], versions: [\"1.0\"]}\n"
+	if _, err := parseConfig([]byte(base + ok)); err != nil {
+		t.Fatalf("the valid base case fails: %v", err)
 	}
-	for name, extra := range cases {
-		if _, err := parseConfig([]byte(base + extra)); err == nil {
+	cases := map[string]string{
+		"no repo":        "x: {" + meta + "license: MIT, pg: [17], versions: [\"1.0\"]}",
+		"no license":     "x: {" + meta + "repo: r, pg: [17], versions: [\"1.0\"]}",
+		"no majors":      "x: {" + meta + "repo: r, license: MIT, versions: [\"1.0\"]}",
+		"no versions":    "x: {" + meta + "repo: r, license: MIT, pg: [17]}",
+		"unknown major":  "x: {" + meta + "repo: r, license: MIT, pg: [12], versions: [\"1.0\"]}",
+		"bad build":      "x: {" + meta + "repo: r, license: MIT, pg: [17], versions: [\"1.0\"], build: cmake}",
+		"empty line":     "x: {" + meta + "repo: r, license: MIT, lines: {17: {versions: []}}}",
+		"no wave":        "x: {description: d, homepage: h, repo: r, license: MIT, pg: [17], versions: [\"1.0\"]}",
+		"no description": "x: {wave: 1, homepage: h, repo: r, license: MIT, pg: [17], versions: [\"1.0\"]}",
+		"no homepage":    "x: {wave: 1, description: d, repo: r, license: MIT, pg: [17], versions: [\"1.0\"]}",
+		"wave 2 bad too": "x: {wave: 2, description: d, homepage: h, license: MIT, pg: [17], versions: [\"1.0\"]}",
+	}
+	for name, entry := range cases {
+		if _, err := parseConfig([]byte(base + "extension_waves: [1]\nextensions:\n  " + entry + "\n")); err == nil {
 			t.Errorf("%s: expected an error", name)
 		}
+	}
+	if _, err := parseConfig([]byte(base + "extensions:\n  x: {" + meta + "repo: r, license: MIT, pg: [17], versions: [\"1.0\"]}\n")); err == nil {
+		t.Error("no extension_waves: expected an error")
+	}
+	if _, err := parseConfig([]byte(base + "  pgext-x-pg17: {versions: [\"1.0\"]}\n")); err == nil {
+		t.Error("reserved engine: expected an error")
 	}
 }
 

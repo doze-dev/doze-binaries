@@ -27,7 +27,26 @@ import (
 const pgextPrefix = "pgext-"
 
 // extSpec is one extension's catalog entry, read verbatim from versions.yaml.
+// It is the only place doze describes the extension: the build reads the
+// build fields, and the signed add-on index (addons.go) publishes the rest.
 type extSpec struct {
+	// Wave is the rollout wave (1 simple, 2 heavy). Only the waves in
+	// versions.yaml extension_waves are expanded into engines and indexed.
+	Wave int `yaml:"wave"`
+	// Description is one line: what the extension is for.
+	Description string `yaml:"description"`
+	// Homepage is the upstream project.
+	Homepage string `yaml:"homepage"`
+	// Aliases are friendlier names for the same extension (pgvector).
+	Aliases []string `yaml:"aliases"`
+	// MayPreload names libraries that may be preloaded (a background worker);
+	// the user opts in through settings.shared_preload_libraries.
+	MayPreload []string `yaml:"may_preload"`
+	// Provides are further CREATE EXTENSION names inside the same bundle,
+	// each with what it requires (postgis_raster needs postgis).
+	Provides map[string][]string `yaml:"provides"`
+	// Note is anything a reader should know (a licence caveat).
+	Note string `yaml:"note"`
 	// Repo is the upstream git repository the bundle is built from.
 	Repo string `yaml:"repo"`
 	// Ref is the source-ref template. Placeholders: {v} (version verbatim),
@@ -38,7 +57,8 @@ type extSpec struct {
 	Subdir string `yaml:"subdir"`
 	// Build is the build system: "pgxs" (default) or "pgrx" (Rust).
 	Build string `yaml:"build"`
-	// License is the SPDX-ish licence name, copied into bundle.json.
+	// License is the licence as shipped (SPDX where there is one), copied
+	// into bundle.json and the add-on index.
 	License string `yaml:"license"`
 	// PG lists the Postgres majors every version in Versions supports.
 	PG []int `yaml:"pg"`
@@ -123,6 +143,9 @@ func (c *config) expandExtensions() error {
 	if c.Engines == nil {
 		c.Engines = map[string]engineSpec{}
 	}
+	if len(c.ExtensionWaves) == 0 {
+		return fmt.Errorf("extension_waves is required: the waves that are built and published")
+	}
 	c.pgext = map[string]extEngine{}
 	pgMajors := c.postgresMajors()
 	names := make([]string, 0, len(c.Extensions))
@@ -134,6 +157,11 @@ func (c *config) expandExtensions() error {
 		spec := c.Extensions[name]
 		if err := validateExt(name, spec); err != nil {
 			return err
+		}
+		// A wave that is not built is validated above but never becomes an
+		// engine: nothing plans, builds, publishes or indexes it.
+		if !c.waveBuilt(spec.Wave) {
+			continue
 		}
 		for _, major := range spec.majors() {
 			if len(pgMajors) > 0 && !pgMajors[major] {
@@ -168,6 +196,15 @@ func validateExt(name string, s extSpec) error {
 	if s.License == "" {
 		return fmt.Errorf("extension %s: license is required", name)
 	}
+	if s.Wave < 1 {
+		return fmt.Errorf("extension %s: wave is required (1, 2, …)", name)
+	}
+	if s.Description == "" {
+		return fmt.Errorf("extension %s: description is required", name)
+	}
+	if s.Homepage == "" {
+		return fmt.Errorf("extension %s: homepage is required", name)
+	}
 	switch s.Build {
 	case "", "pgxs", "pgrx":
 	default:
@@ -189,6 +226,29 @@ func validateExt(name string, s extSpec) error {
 		}
 	}
 	return nil
+}
+
+// waveBuilt reports whether a catalog wave is in the built set.
+func (c *config) waveBuilt(w int) bool {
+	for _, b := range c.ExtensionWaves {
+		if b == w {
+			return true
+		}
+	}
+	return false
+}
+
+// builtExtensions returns the names of the catalogued extensions in the built
+// set (extension_waves), sorted.
+func (c *config) builtExtensions() []string {
+	var out []string
+	for n, s := range c.Extensions {
+		if c.waveBuilt(s.Wave) {
+			out = append(out, n)
+		}
+	}
+	sort.Strings(out)
+	return out
 }
 
 // postgresMajors is the set of majors the postgres catalog ships, so an

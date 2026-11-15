@@ -144,6 +144,9 @@ type config struct {
 	// Extensions is the Postgres extension catalog; each (extension, major)
 	// is expanded into an Engines entry keyed pgext-<name>-pg<major>.
 	Extensions map[string]extSpec `yaml:"extensions"`
+	// ExtensionWaves are the catalog waves that are built, published and
+	// listed in the add-on index; entries of other waves are modelled only.
+	ExtensionWaves []int `yaml:"extension_waves"`
 
 	// pgext maps each expanded pgext-* engine key to its extension.
 	pgext map[string]extEngine
