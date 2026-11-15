@@ -93,7 +93,10 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-15]
+        # The runners the release builds on (versions.yaml triples), not
+        # ubuntu-latest: that moved to 26.04 (clang 21), where pgrx's bindgen
+        # emitted opaque Postgres structs and pg_jsonschema failed to compile.
+        os: [ubuntu-22.04, macos-15]
         engine: ${{ fromJSON(needs.changes.outputs.engines) }}
     runs-on: ${{ matrix.os }}
     steps:
