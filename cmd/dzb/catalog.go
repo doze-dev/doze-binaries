@@ -14,14 +14,25 @@ import (
 // release workflow's build matrix is derived from the catalog rather than a
 // hardcoded list — adding an engine is one versions.yaml entry plus a recipe.
 func runEngines(args []string) error {
-	if len(args) != 0 {
-		return fmt.Errorf("usage: dzb engines")
+	pgext := false
+	switch {
+	case len(args) == 0:
+	case len(args) == 1 && args[0] == "--pgext":
+		pgext = true
+	default:
+		return fmt.Errorf("usage: dzb engines [--pgext]")
 	}
 	cfg, err := loadConfig()
 	if err != nil {
 		return err
 	}
-	out, err := json.Marshal(cfg.engineNames())
+	// Without --pgext: the base engines (one build-engine call each). With it:
+	// the pgext-* extension bundles, which release.yml builds afterwards.
+	list := cfg.engineGroup(pgext)
+	if list == nil {
+		list = []string{}
+	}
+	out, err := json.Marshal(list)
 	if err != nil {
 		return err
 	}
@@ -130,6 +141,12 @@ type config struct {
 	// its runner. Engines that name no triples never get them.
 	OptionalTriples map[string]string     `yaml:"optional_triples"`
 	Engines         map[string]engineSpec `yaml:"engines"`
+	// Extensions is the Postgres extension catalog; each (extension, major)
+	// is expanded into an Engines entry keyed pgext-<name>-pg<major>.
+	Extensions map[string]extSpec `yaml:"extensions"`
+
+	// pgext maps each expanded pgext-* engine key to its extension.
+	pgext map[string]extEngine
 }
 
 // runnerFor returns the GitHub runner that builds triple t, global or optional.
@@ -145,9 +162,21 @@ func loadConfig() (*config, error) {
 	if err != nil {
 		return nil, err
 	}
+	return parseConfig(data)
+}
+
+func parseConfig(data []byte) (*config, error) {
 	var cfg config
 	if err := yaml.Unmarshal(data, &cfg); err != nil {
 		return nil, fmt.Errorf("parsing versions.yaml: %w", err)
+	}
+	for e := range cfg.Engines {
+		if isPgext(e) {
+			return nil, fmt.Errorf("engine %q: the %s prefix is reserved for the extensions catalog", e, pgextPrefix)
+		}
+	}
+	if err := cfg.expandExtensions(); err != nil {
+		return nil, fmt.Errorf("versions.yaml extensions: %w", err)
 	}
 	return &cfg, nil
 }
@@ -160,6 +189,19 @@ func (c *config) engineNames() []string {
 		out = append(out, e)
 	}
 	sort.Strings(out)
+	return out
+}
+
+// engineGroup returns the base engines (pgext=false) or the extension-bundle
+// engines (pgext=true). They release separately: a bundle builds against a
+// PUBLISHED postgres tree, so bundles run after the base engines publish.
+func (c *config) engineGroup(pgext bool) []string {
+	var out []string
+	for _, e := range c.engineNames() {
+		if isPgext(e) == pgext {
+			out = append(out, e)
+		}
+	}
 	return out
 }
 

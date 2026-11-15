@@ -5,6 +5,13 @@
 //	dzb manifest <dist> <baseURL>  scan built archives -> multi-engine index.json
 //	dzb engines                    the engine keys from versions.yaml -> JSON array
 //	dzb latest <engine>            "<archiveVersion> <ref>" of the newest version
+//	dzb pgext ...                  build inputs for an extension bundle (pgext.go)
+//	dzb pgext-bundle <json> <db> <root>  contract-check a bundle.json, as shell vars
+//	dzb verify-plan [engines]      the weekly verify sweep's (engine, triple) matrix
+//	dzb artifacts <index> <engine> <triple>  a published index's artifacts, one per line
+//
+// Extension bundles (versions.yaml `extensions:`) are expanded into engines
+// keyed pgext-<name>-pg<major>; `engines`/`plan` take --pgext to select them.
 //
 // The heavier lifting (compiling engines, bundling libraries, packaging) stays
 // in shell, which is the better tool for orchestrating CLIs. dzb owns only the
@@ -19,7 +26,7 @@ import (
 
 func main() {
 	if len(os.Args) < 2 {
-		fatal("usage: dzb <plan|manifest|engines|latest|artifacts> [args]")
+		fatal("usage: dzb <plan|manifest|engines|latest|artifacts|pgext|pgext-bundle|verify-plan> [args]")
 	}
 	var err error
 	switch os.Args[1] {
@@ -33,8 +40,14 @@ func main() {
 		err = runLatest(os.Args[2:])
 	case "artifacts":
 		err = runArtifacts(os.Args[2:])
+	case "pgext":
+		err = runPgext(os.Args[2:])
+	case "pgext-bundle":
+		err = runBundleEnv(os.Args[2:])
+	case "verify-plan":
+		err = runVerifyPlan(os.Args[2:])
 	default:
-		fatal("unknown command %q (want plan|manifest|engines|latest|artifacts)", os.Args[1])
+		fatal("unknown command %q (want plan|manifest|engines|latest|artifacts|pgext|pgext-bundle|verify-plan)", os.Args[1])
 	}
 	if err != nil {
 		fatal("%v", err)
