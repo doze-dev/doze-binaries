@@ -209,7 +209,9 @@ engines:
 #   note         anything a reader should know (a licence caveat).
 #   bundled      third-party libraries built from source and shipped inside
 #                the bundle: name, version, license, source (an https tarball
-#                URL + its sha256, or <git repo>@<commit>). The recipe builds
+#                URL + its sha256, or <git repo>@<commit>), and optionally
+#                versions: the extension versions it applies to (a line that
+#                pins other code; default all). The recipe builds
 #                exactly these; each one's licence ships in the archive under
 #                share/licenses/<name>/ (next to the extension's own, which
 #                every bundle carries), and the add-on index publishes the
@@ -459,27 +461,50 @@ extensions:
     homepage: https://github.com/duckdb/pg_duckdb
     repo: https://github.com/duckdb/pg_duckdb
     ref: "v{v}"
-    pg: [14, 15, 16, 17, 18]
+    # 1.1.x calls ExecCheckRTEPerms() / ExecCheckOneRelPerms(), which
+    # Postgres only exports from later 14-17 minors (not 14.0 … 17.0, which
+    # bundles build against), so a 1.1 module would not load on early minors.
+    # 14-17 stay on 1.0.0, which does not use them; 18 takes 1.1.1.
+    pg: [18]
     versions: ["1.1.1"]
+    lines:
+      14: { versions: ["1.0.0"] }
+      15: { versions: ["1.0.0"] }
+      16: { versions: ["1.0.0"] }
+      17: { versions: ["1.0.0"] }
     preload: [pg_duckdb]
     bundled:
-      # The git submodule pinned by pg_duckdb v1.1.1 (DuckDB 1.4.3), built as
-      # libduckdb with the json, icu, parquet and httpfs extensions inside.
+      # The DuckDB git submodule each release pins, built as libduckdb with
+      # the json, icu, parquet and httpfs extensions inside
+      # (third_party/pg_duckdb_extensions.cmake pins httpfs).
       - name: duckdb
         version: "1.4.3"
         license: MIT
         source: https://github.com/duckdb/duckdb@d1dc88f950d456d72493df452dabdcd13aa413dd
+        versions: ["1.1.1"]
       - name: duckdb-httpfs
         version: "9c7d349"
         license: MIT
         source: https://github.com/duckdb/duckdb-httpfs@9c7d34977b10346d0b4cbbde5df807d1dab0b2bf
-      # httpfs's HTTP client, built static (HTTP/HTTPS only) against the
-      # OpenSSL the Postgres tree ships.
+        versions: ["1.1.1"]
+      # httpfs's HTTP client from 1.4 on, built static (HTTP/HTTPS only)
+      # against the OpenSSL the Postgres tree ships.
       - name: curl
         version: "8.23.0"
         license: curl
         source: https://github.com/curl/curl/releases/download/curl-8_23_0/curl-8.23.0.tar.xz
         sha256: 8dadd7d2536a314f982ad05a651b713f426bf7d02cc2c76cffb9796f2218e6c5
+        versions: ["1.1.1"]
+      - name: duckdb
+        version: "1.3.2"
+        license: MIT
+        source: https://github.com/duckdb/duckdb@0b83e5d2f68bc02dfefde74b846bd039f078affa
+        versions: ["1.0.0"]
+      - name: duckdb-httpfs
+        version: "7ce5308"
+        license: MIT
+        source: https://github.com/duckdb/duckdb-httpfs@7ce5308ed8fe48b593538dbd54344a2fc0695bc7
+        versions: ["1.0.0"]
   vectorscale:
     wave: 2
     aliases: [pgvectorscale]
@@ -490,9 +515,14 @@ extensions:
     ref: "{v}"
     subdir: pgvectorscale
     build: pgrx
+    # 0.9.1 builds for 14-18 (its Cargo features list pg14 … pg18); the old
+    # module catalog had it on 18 only. All five pass verify.
     pg: [14, 15, 16, 17, 18]
     versions: ["0.9.1"]
     requires: [vector]
+    note: >-
+      On x86_64 it is built, as upstream builds it, for CPUs with AVX2 and
+      FMA (Haswell, 2013, and later).
   age:
     wave: 2
     aliases: [apache_age]

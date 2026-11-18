@@ -65,6 +65,17 @@ pgext_hook_deps() {
   esac
   command -v cmake >/dev/null || pgext_die "pg_duckdb needs cmake"
   DUCKDB_CACHE="$(duckdb_cache_dir "$triple")"
+  # pg_duckdb links -llz4. The tree ships liblz4 (the one Postgres loads)
+  # but no unversioned liblz4.dylib, and its PGXS flags put Homebrew's lz4
+  # on the link line, which would be recorded (built for the host's macOS).
+  # PG_LDFLAGS goes first on PGXS's link line: link the tree's instead.
+  if [ "$(uname -s)" = Darwin ]; then
+    local lz4
+    lz4="$(ls "$("$PGEXT_PG_CONFIG" --libdir)"/liblz4.*.dylib 2>/dev/null | head -1)"
+    [ -n "$lz4" ] || pgext_die "the Postgres tree ships no liblz4"
+    mkdir -p "$PGEXT_WORK/lz4" && ln -sf "$lz4" "$PGEXT_WORK/lz4/liblz4.dylib"
+    PGEXT_MAKE_ARGS+=("PG_LDFLAGS=-L$PGEXT_WORK/lz4")
+  fi
 }
 
 pgext_hook_pre_build() {
@@ -87,18 +98,24 @@ pgext_hook_pre_build() {
     local t0; t0="$(date +%s)"
     rm -rf "$DUCKDB_CACHE"; mkdir -p "$DUCKDB_CACHE"
     ssl="$(duckdb_openssl_root "$pgtree")"
-    duckdb_build_curl "$DUCKDB_CACHE/curl" "$ssl"
+    # DuckDB 1.4 httpfs talks HTTP through libcurl; 1.3 through its own
+    # httplib, so curl is bundled only where versions.yaml says so.
+    local curlvars=""
+    if [ -n "${PGEXT_DEP_CURL_URL:-}" ]; then
+      duckdb_build_curl "$DUCKDB_CACHE/curl" "$ssl"
+      curlvars=" -DCMAKE_PREFIX_PATH=$DUCKDB_CACHE/curl -DCURL_DIR=$DUCKDB_CACHE/curl/lib/cmake/CURL"
+    fi
     command -v ninja >/dev/null && gen=ninja
     # pg_duckdb's own Makefile target, with CMake told where the pinned curl
     # and the tree's OpenSSL are.
     make -C "$src" duckdb PG_CONFIG="$PGEXT_PG_CONFIG" DUCKDB_GEN="$gen" \
-      DUCKDB_CMAKE_VARS="-DCXX_EXTRA=-fvisibility=default -DBUILD_SHELL=0 -DBUILD_PYTHON=0 -DBUILD_UNITTESTS=0 -DCMAKE_PREFIX_PATH=$DUCKDB_CACHE/curl -DCURL_DIR=$DUCKDB_CACHE/curl/lib/cmake/CURL${ssl:+ -DOPENSSL_ROOT_DIR=$ssl}${MACOSX_DEPLOYMENT_TARGET:+ -DCMAKE_OSX_DEPLOYMENT_TARGET=$MACOSX_DEPLOYMENT_TARGET}" >&2 \
+      DUCKDB_CMAKE_VARS="-DCXX_EXTRA=-fvisibility=default -DBUILD_SHELL=0 -DBUILD_PYTHON=0 -DBUILD_UNITTESTS=0${curlvars}${ssl:+ -DOPENSSL_ROOT_DIR=$ssl}${MACOSX_DEPLOYMENT_TARGET:+ -DCMAKE_OSX_DEPLOYMENT_TARGET=$MACOSX_DEPLOYMENT_TARGET}" >&2 \
       || pgext_die "building DuckDB"
     cp "$src/third_party/duckdb/build/release/src/$lib" "$DUCKDB_CACHE/"
     mkdir -p "$DUCKDB_CACHE/licenses/duckdb" "$DUCKDB_CACHE/licenses/duckdb-httpfs"
     cp "$src/third_party/duckdb/LICENSE" "$DUCKDB_CACHE/licenses/duckdb/"
     cp "$src"/third_party/duckdb/build/release/_deps/httpfs_extension_fc-src/LICENSE "$DUCKDB_CACHE/licenses/duckdb-httpfs/" 2>/dev/null \
-      || find "$src/third_party/duckdb/build" -path '*httpfs*' -maxdepth 4 -name LICENSE -exec cp {} "$DUCKDB_CACHE/licenses/duckdb-httpfs/" \; -quit
+      || find "$src/third_party/duckdb/build" -maxdepth 4 -path '*httpfs*' -name LICENSE -exec cp {} "$DUCKDB_CACHE/licenses/duckdb-httpfs/" \; -quit
     touch "$DUCKDB_CACHE/.done"
     pgext_log "pg_duckdb: libduckdb built in $(( $(date +%s) - t0 ))s"
   else
@@ -112,5 +129,5 @@ pgext_hook_pre_build() {
   for d in duckdb duckdb-httpfs; do
     pgext_dep_license "$d" "$DUCKDB_CACHE/licenses/$d"/*
   done
-  pgext_dep_license curl "$DUCKDB_CACHE/curl/licenses/curl"/*
+  [ -z "${PGEXT_DEP_CURL_URL:-}" ] || pgext_dep_license curl "$DUCKDB_CACHE/curl/licenses/curl"/*
 }

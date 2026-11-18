@@ -178,3 +178,45 @@ func TestAddonIndexSourcesAndBundled(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+// A line that bundles different code: pg_duckdb 1.0.0 (14-17) and 1.1.1 (18).
+func TestBundledPerVersion(t *testing.T) {
+	y := strings.Replace(depsCatalog, "extensions:\n", `extensions:
+  pg_duckdb:
+    wave: 2
+    description: d
+    homepage: https://example.com/d
+    repo: https://example.com/d
+    license: MIT
+    pg: [18]
+    versions: ["1.1.1"]
+    lines:
+      17: { versions: ["1.0.0"] }
+    bundled:
+      - { name: duckdb, version: "1.4.3", license: MIT, source: "https://example.com/duckdb@new", versions: ["1.1.1"] }
+      - { name: curl, version: "8.23.0", license: curl, source: "https://example.com/curl@x", versions: ["1.1.1"] }
+      - { name: duckdb, version: "1.3.2", license: MIT, source: "https://example.com/duckdb@old", versions: ["1.0.0"] }
+`, 1)
+	cfg := mustConfig(t, y)
+	old, err := cfg.pgextEnv("pg_duckdb", "1.0.0", 17)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(old, "PGEXT_DEP_DUCKDB_URL='https://example.com/duckdb@old'\n") || strings.Contains(old, "CURL") ||
+		!strings.Contains(old, "PGEXT_BUNDLED='duckdb'\n") {
+		t.Errorf("1.0.0 env:\n%s", old)
+	}
+	cur, _ := cfg.pgextEnv("pg_duckdb", "1.1.1", 18)
+	if !strings.Contains(cur, "PGEXT_DEP_DUCKDB_URL='https://example.com/duckdb@new'\n") || !strings.Contains(cur, "PGEXT_BUNDLED='duckdb curl'\n") {
+		t.Errorf("1.1.1 env:\n%s", cur)
+	}
+	// The same name twice for one version, or a version that is not catalogued.
+	for _, bad := range []string{
+		strings.Replace(y, `source: "https://example.com/duckdb@old", versions: ["1.0.0"]`, `source: "https://example.com/duckdb@old"`, 1),
+		strings.Replace(y, `source: "https://example.com/duckdb@old", versions: ["1.0.0"]`, `source: "https://example.com/duckdb@old", versions: ["9.9"]`, 1),
+	} {
+		if _, err := parseConfig([]byte(bad)); err == nil {
+			t.Error("expected a bundled validation error")
+		}
+	}
+}

@@ -103,6 +103,38 @@ type bundledLib struct {
 	Source string `yaml:"source" json:"source"`
 	// SHA256 is the tarball's digest (empty for a git source).
 	SHA256 string `yaml:"sha256,omitempty" json:"sha256,omitempty"`
+	// Versions limits the entry to these versions of the extension, for a
+	// line that pins different code (pg_duckdb 1.0.0 bundles another DuckDB
+	// than 1.1.1). Empty means every version.
+	Versions []string `yaml:"versions,omitempty" json:"versions,omitempty"`
+}
+
+// appliesTo reports whether the library is bundled with extension version v.
+func (b bundledLib) appliesTo(v string) bool {
+	return len(b.Versions) == 0 || contains(b.Versions, v)
+}
+
+// bundledFor is what one version of the extension bundles.
+func (s extSpec) bundledFor(v string) []bundledLib {
+	var out []bundledLib
+	for _, b := range s.Bundled {
+		if b.appliesTo(v) {
+			out = append(out, b)
+		}
+	}
+	return out
+}
+
+// allVersions is every version the extension catalogues, on any major.
+func (s extSpec) allVersions() map[string]bool {
+	all := map[string]bool{}
+	for _, m := range s.majors() {
+		vs, _ := s.forMajor(m)
+		for _, v := range vs {
+			all[v] = true
+		}
+	}
+	return all
 }
 
 // extLine is one Postgres major's own release line.
@@ -248,15 +280,28 @@ func validateExt(name string, s extSpec) error {
 			return fmt.Errorf("extension %s: bad version %q", name, v)
 		}
 	}
-	seen := map[string]bool{}
-	for _, b := range s.Bundled {
+	all := s.allVersions()
+	for i, b := range s.Bundled {
 		if b.Name == "" || strings.Trim(b.Name, "abcdefghijklmnopqrstuvwxyz0123456789-_") != "" {
 			return fmt.Errorf("extension %s: bundled library %q: name must be lower-case letters, digits, - or _", name, b.Name)
 		}
-		if seen[b.Name] {
-			return fmt.Errorf("extension %s: bundled library %s is listed twice", name, b.Name)
+		for _, v := range b.Versions {
+			if !all[v] {
+				return fmt.Errorf("extension %s: bundled library %s names version %s, which is not catalogued", name, b.Name, v)
+			}
 		}
-		seen[b.Name] = true
+		// A name may appear once per extension version: the same library at
+		// another version for another line.
+		for _, o := range s.Bundled[:i] {
+			if o.Name != b.Name {
+				continue
+			}
+			for v := range all {
+				if o.appliesTo(v) && b.appliesTo(v) {
+					return fmt.Errorf("extension %s: bundled library %s is listed twice for version %s", name, b.Name, v)
+				}
+			}
+		}
 		if b.Version == "" || b.License == "" || b.Source == "" {
 			return fmt.Errorf("extension %s: bundled library %s needs version, license and source", name, b.Name)
 		}
@@ -519,7 +564,7 @@ func (c *config) pgextEnv(name, version string, major int) (string, error) {
 		{"PGEXT_PG_NEWEST", newest},
 	}
 	var names []string
-	for _, d := range e.Spec.Bundled {
+	for _, d := range e.Spec.bundledFor(version) {
 		names = append(names, d.Name)
 		p := "PGEXT_DEP_" + depEnvName(d.Name)
 		vars = append(vars, [2]string{p + "_VERSION", d.Version}, [2]string{p + "_URL", d.Source}, [2]string{p + "_SHA256", d.SHA256})
@@ -613,11 +658,11 @@ func pgtreeArtifact(full, triple string) (string, string, error) {
 //	dzb pgext bundle-json <name> <version> <pg_major>  the bundle.json contents
 //	dzb pgext pgtree <base|newest> <pg_major> <triple> "<full> <url> <sha256>"
 //	dzb pgext deps <name> <pg_major>                   bundles needed to verify it, "<name> <version>" per line
-//	dzb pgext bundled <name>                           its bundled libraries' names, one per line
+//	dzb pgext bundled <name> [version]                 its bundled libraries (for that version), one per line
 //	dzb pgext provides <name>                          the further CREATE EXTENSION names it ships
 //	dzb pgext artifact <name> <pg_major> <version> <triple>  a published bundle: "<url> <sha256>" (exit 3 if none)
 func runPgext(args []string) error {
-	usage := fmt.Errorf("usage: dzb pgext env|bundle-json <name> <version> <pg_major> | pgtree base|newest <pg_major> <triple> | deps <name> <pg_major> | bundled <name> | artifact <name> <pg_major> <version> <triple>")
+	usage := fmt.Errorf("usage: dzb pgext env|bundle-json <name> <version> <pg_major> | pgtree base|newest <pg_major> <triple> | deps <name> <pg_major> | bundled <name> [version] | artifact <name> <pg_major> <version> <triple>")
 	if len(args) == 0 {
 		return usage
 	}
@@ -641,7 +686,7 @@ func runPgext(args []string) error {
 		fmt.Print(out)
 		return nil
 	case "bundled", "provides":
-		if len(args) != 2 {
+		if len(args) != 2 && !(args[0] == "bundled" && len(args) == 3) {
 			return usage
 		}
 		s, ok := cfg.Extensions[args[1]]
@@ -654,7 +699,11 @@ func runPgext(args []string) error {
 			}
 			return nil
 		}
-		for _, b := range s.Bundled {
+		libs := s.Bundled
+		if len(args) == 3 {
+			libs = s.bundledFor(args[2])
+		}
+		for _, b := range libs {
 			fmt.Println(b.Name)
 		}
 		return nil

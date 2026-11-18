@@ -53,7 +53,7 @@ want="pgext-$BUNDLE_NAME-pg$BUNDLE_PG_MAJOR-$BUNDLE_VERSION-$triple"
 [ -f "$bundle/share/extension/$BUNDLE_NAME.control" ] || pgext_die "no share/extension/$BUNDLE_NAME.control"
 echo "  verify: $BUNDLE_NAME $BUNDLE_VERSION for PG$BUNDLE_PG_MAJOR (preload: ${BUNDLE_PRELOAD:-none})"
 
-for d in "$BUNDLE_NAME" $(pgext_dzb pgext bundled "$BUNDLE_NAME"); do
+for d in "$BUNDLE_NAME" $(pgext_dzb pgext bundled "$BUNDLE_NAME" "$BUNDLE_VERSION"); do
   [ -n "$(ls -A "$bundle/share/licenses/$d" 2>/dev/null)" ] \
     || pgext_die "no share/licenses/$d: the bundle must carry its own licence and every bundled library's"
 done

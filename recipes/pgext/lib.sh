@@ -289,8 +289,8 @@ pgext_relocate_linux() {
         pgext_is_system_linux "$name" && continue
         [ "$path" = "not" ] && pgext_die "$(basename "$f"): $name not found"
         [ -e "$bundle/lib/$name" ] && continue
-        pgext_log "vendoring $name (from $path)"
-        echo "$name $path" >> "$PGEXT_WORK/vendored.txt"
+        pgext_log "vendoring $name (from $path, needed by $(basename "$f"))"
+        echo "$name $path (needed by $(basename "$f"))" >> "$PGEXT_WORK/vendored.txt"
         cp -L "$path" "$bundle/lib/$name" && chmod u+w "$bundle/lib/$name"
       done < <(LD_LIBRARY_PATH="$bundle/lib:$pgtree/lib${PGEXT_EXTRA_LIBDIRS:+:$PGEXT_EXTRA_LIBDIRS}" ldd "$f" 2>/dev/null | awk '/=>/ {print $1" "$3}')
     done < <(find "$bundle/bin" "$bundle/lib" -type f)
@@ -335,8 +335,8 @@ pgext_macho_fix() {
     fi
     [ -n "$src" ] && [ -e "$src" ] || pgext_die "$(basename "$f"): cannot find $dep"
     if [ ! -e "$bundle/lib/$base" ]; then
-      pgext_log "vendoring $base (from $src)"
-      echo "$base $src" >> "$PGEXT_WORK/vendored.txt"
+      pgext_log "vendoring $base (from $src, needed by $(basename "$f"))"
+      echo "$base $src (needed by $(basename "$f"))" >> "$PGEXT_WORK/vendored.txt"
       cp -L "$src" "$bundle/lib/$base" && chmod u+w "$bundle/lib/$base"
       install_name_tool -id "@rpath/$base" "$bundle/lib/$base" 2>/dev/null || true
       pgext_macho_fix "$bundle/lib/$base" "$(dirname "$src")" "$bundle" "$pgtree"
