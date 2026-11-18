@@ -57,9 +57,17 @@ func runPlan(args []string) error {
 	// (postgres: 74 versions x 3 triples = 222), so refuse loudly instead of
 	// letting a catalog addition wedge the release: stage the new versions
 	// across two pushes (the first publish shrinks the second plan).
+	// The cap is per matrix: build-pgext.yml runs one matrix per build stage
+	// (stage 0 is a base engine, built by build-engine.yml per engine).
 	const matrixCap = 256
-	if len(include) > matrixCap {
-		return fmt.Errorf("plan has %d jobs, over GitHub's %d-per-matrix limit — stage the catalog additions across smaller pushes", len(include), matrixCap)
+	perStage := map[int]int{}
+	for _, it := range include {
+		perStage[it.Stage]++
+	}
+	for stage, n := range perStage {
+		if n > matrixCap {
+			return fmt.Errorf("plan has %d stage-%d jobs, over GitHub's %d-per-matrix limit — stage the catalog additions across smaller pushes", n, stage, matrixCap)
+		}
 	}
 
 	out, err := json.Marshal(struct {

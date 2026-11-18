@@ -31,3 +31,17 @@ pgext_hook_build() {
   cmake --build "$src/build" -j"$(pgext_ncpu)"
   DESTDIR="$PGEXT_STAGE" cmake --install "$src/build"
 }
+
+# pgRouting's CMake names the module libpgrouting-<v>.so on every platform,
+# but Postgres 16+ on macOS loads modules with the tree's DLSUFFIX, .dylib
+# ("$libdir/libpgrouting-3.8" is then not found). Follow the tree.
+pgext_hook_post_collect() {
+  local bundle="$1" suffix f
+  # Makefile.global (16+) or Makefile.port (older) sets it.
+  suffix="$({ cat "$(dirname "$("$PGEXT_PG_CONFIG" --pgxs)")"/../Makefile.{global,port} 2>/dev/null || true; } | sed -nE 's/^DLSUFFIX = (.*)$/\1/p' | tail -1)"
+  [ -n "$suffix" ] || pgext_die "cannot read DLSUFFIX from the tree's Makefile.global"
+  for f in "$bundle"/lib/libpgrouting-*.so; do
+    [ -f "$f" ] && [ "$suffix" != .so ] || continue
+    mv "$f" "${f%.so}$suffix"
+  done
+}

@@ -91,7 +91,7 @@ pgext_hook_pre_build() {
     command -v ninja >/dev/null && gen=ninja
     # pg_duckdb's own Makefile target, with CMake told where the pinned curl
     # and the tree's OpenSSL are.
-    make -C "$src" duckdb DUCKDB_GEN="$gen" \
+    make -C "$src" duckdb PG_CONFIG="$PGEXT_PG_CONFIG" DUCKDB_GEN="$gen" \
       DUCKDB_CMAKE_VARS="-DCXX_EXTRA=-fvisibility=default -DBUILD_SHELL=0 -DBUILD_PYTHON=0 -DBUILD_UNITTESTS=0 -DCMAKE_PREFIX_PATH=$DUCKDB_CACHE/curl -DCURL_DIR=$DUCKDB_CACHE/curl/lib/cmake/CURL${ssl:+ -DOPENSSL_ROOT_DIR=$ssl}${MACOSX_DEPLOYMENT_TARGET:+ -DCMAKE_OSX_DEPLOYMENT_TARGET=$MACOSX_DEPLOYMENT_TARGET}" >&2 \
       || pgext_die "building DuckDB"
     cp "$src/third_party/duckdb/build/release/src/$lib" "$DUCKDB_CACHE/"
