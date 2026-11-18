@@ -116,7 +116,16 @@ jobs:
           case "$engine" in
             pgext-*)   # pgext-<name>-pg<major>
               name="${engine#pgext-}"
-              recipes/pgext/build.sh "${name%-pg*}" "$version" "${name##*-pg}" "$triple" dist ;;
+              ext="${name%-pg*}"; major="${name##*-pg}"
+              # Bundles it needs to verify (pgrouting needs postgis) are
+              # built and verified first, into the same dist/.
+              deps="$(go run ./cmd/dzb pgext deps "$ext" "$major")"
+              while read -r dep dver; do
+                [ -n "$dep" ] || continue
+                echo "building $dep $dver first: $ext needs it"
+                recipes/pgext/build.sh "$dep" "$dver" "$major" "$triple" dist
+              done <<< "$deps"
+              recipes/pgext/build.sh "$ext" "$version" "$major" "$triple" dist ;;
             *)
               recipes/$engine/build.sh "$version" "$ref" "$triple" dist ;;
           esac

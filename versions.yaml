@@ -207,6 +207,16 @@ engines:
 #   provides     further CREATE EXTENSION names inside the same bundle, each
 #                with what it requires (postgis_raster needs postgis).
 #   note         anything a reader should know (a licence caveat).
+#   bundled      third-party libraries built from source and shipped inside
+#                the bundle: name, version, license, source (an https tarball
+#                URL + its sha256, or <git repo>@<commit>). The recipe builds
+#                exactly these; each one's licence ships in the archive under
+#                share/licenses/<name>/ (next to the extension's own, which
+#                every bundle carries), and the add-on index publishes the
+#                list, so the corresponding source of everything shipped is on
+#                record. Libraries the Postgres tree ships are not listed.
+# The add-on index also records, per release and major, `sources`: the exact
+# upstream source (<repo>@<ref>, as in bundle.json) the bundle was built from.
 #
 # Bundles build against the OLDEST minor of each major the postgres catalog
 # lists (14.0 … 18.0), downloaded from the published postgres release: modules
@@ -218,7 +228,7 @@ engines:
 # recipes/pgext/verify.sh against both the x.0 and the newest minor. Linux was
 # smoke-tested on Ubuntu 24.04 arm64 only (7 bundles); CI's 22.04 runners are
 # the real gate for the Linux triples.
-extension_waves: [1]
+extension_waves: [1, 2]
 extensions:
   # ── wave 1 ──
   vector:
@@ -339,13 +349,17 @@ extensions:
     pg: [14, 15, 16, 17, 18]
     versions: ["0.3.4"]
 
-  # ── wave 2: modelled, not built ──
-  # Not in extension_waves, so dzb expands no engines for these and the add-on
-  # index leaves them out: doze cannot offer what was never built. Tags checked
-  # upstream 2026-11-15. Most need a recipes/pgext/<name>/hooks.sh before they
-  # can build (postgis: autotools + GEOS/PROJ/GDAL; h3, pgrouting, timescaledb:
-  # CMake; pg_duckdb: the DuckDB submodule), and every one a smoke.sql. The
-  # licences are the owner's call before any ships (pg_search is AGPL-3.0).
+  # ── wave 2 ──
+  # The owner's call (2026-11-18): only properly open-source extensions ship.
+  # Left out on purpose, and not catalogued at all:
+  #   - pg_search (ParadeDB): AGPL-3.0.
+  #   - timescaledb: its key features (compression, continuous aggregates,
+  #     retention) are under the non-open Timescale License; the Apache-only
+  #     build is a hollow version of the product.
+  # Tags and majors checked upstream 2026-11-18. Every bundled library is
+  # built from source with the bundle's deployment target and shipped inside
+  # it (bundled:), so nothing comes from Homebrew or the system at run time
+  # beyond what Postgres itself loads.
   postgis:
     wave: 2
     description: Geographic objects, spatial indexes and functions.
@@ -364,17 +378,61 @@ extensions:
     env:
       PROJ_DATA: "{root}/share/proj"
       GDAL_DATA: "{root}/share/gdal"
+    bundled:
+      - name: geos
+        version: "3.14.1"
+        license: LGPL-2.1-or-later
+        source: https://github.com/libgeos/geos/releases/download/3.14.1/geos-3.14.1.tar.bz2
+        sha256: 3c20919cda9a505db07b5216baa980bacdaa0702da715b43f176fb07eff7e716
+      - name: sqlite
+        version: "3.54.1"
+        license: blessing
+        source: https://sqlite.org/2026/sqlite-autoconf-3540100.tar.gz
+        sha256: 926ef8d3eab93fbf6e06011901273eec076b25594a4e1cdadd50c987f4f6d64e
+      - name: proj
+        version: "9.8.1"
+        license: MIT
+        source: https://github.com/OSGeo/PROJ/releases/download/9.8.1/proj-9.8.1.tar.gz
+        sha256: af5b731c145c1d13c4e3b4eeb7d167e94e845e440f71e3496b4ed8dae0291960
+      - name: gdal
+        version: "3.13.3"
+        license: MIT
+        source: https://github.com/OSGeo/gdal/releases/download/v3.13.3/gdal-3.13.3.tar.gz
+        sha256: 5e0c388d83da2d686cc00a40272882432cdb54edff43d4af173e532844a0a0ea
+      - name: json-c
+        version: "0.18"
+        license: MIT
+        source: https://github.com/json-c/json-c/archive/refs/tags/json-c-0.18-20240915.tar.gz
+        sha256: 3112c1f25d39eca661fe3fc663431e130cc6e2f900c081738317fba49d29e298
+      - name: protobuf-c
+        version: "1.5.2"
+        license: BSD-2-Clause
+        source: https://github.com/protobuf-c/protobuf-c/releases/download/v1.5.2/protobuf-c-1.5.2.tar.gz
+        sha256: e2c86271873a79c92b58fef7ebf8de1aa0df4738347a8bd5d4e65a80a16d0d24
+      - name: pcre2
+        version: "10.47"
+        license: BSD-3-Clause WITH PCRE2-exception
+        source: https://github.com/PCRE2Project/pcre2/releases/download/pcre2-10.47/pcre2-10.47.tar.bz2
+        sha256: 47fe8c99461250d42f89e6e8fdaeba9da057855d06eb7fc08d9ca03fd08d7bc7
   h3:
     wave: 2
     description: Uber's H3 hexagonal grid indexing (h3_postgis bridges to PostGIS).
     license: Apache-2.0
-    homepage: https://github.com/zachasme/h3-pg
-    repo: https://github.com/zachasme/h3-pg
+    homepage: https://github.com/postgis/h3-pg
+    # The project moved from zachasme/h3-pg to the PostGIS organisation.
+    repo: https://github.com/postgis/h3-pg
     ref: "v{v}"
     pg: [14, 15, 16, 17, 18]
     versions: ["4.2.3"]
     provides:
       h3_postgis: [h3, postgis]
+    bundled:
+      # h3-pg's CMake fetches and statically links this exact tarball.
+      - name: h3
+        version: "4.2.0"
+        license: Apache-2.0
+        source: https://github.com/uber/h3/archive/refs/tags/v4.2.0.tar.gz
+        sha256: 438db46fc2b388785d2a0d8e26aa5509739240a7b50b2510c416778d871a4e11
   pgrouting:
     wave: 2
     description: Shortest-path and network routing on PostGIS.
@@ -385,36 +443,15 @@ extensions:
     pg: [14, 15, 16, 17, 18]
     versions: ["3.8.0"]
     requires: [postgis]
-  timescaledb:
-    wave: 2
-    aliases: [timescale]
-    description: Time-series hypertables and time_bucket.
-    license: Apache-2.0
-    homepage: https://github.com/timescale/timescaledb
-    repo: https://github.com/timescale/timescaledb
-    ref: "{v}"
-    pg: [15, 16, 17, 18]
-    versions: ["2.31.0"]
-    preload: [timescaledb]
-    settings:
-      timescaledb.telemetry_level: "off"
-      timescaledb.license: apache
-    note: >-
-      The Apache-only build: hypertables and time_bucket; no compression,
-      continuous aggregates or retention policies (those are under the
-      Timescale License).
-  pg_search:
-    wave: 2
-    description: BM25 full-text search (ParadeDB).
-    license: AGPL-3.0
-    homepage: https://github.com/paradedb/paradedb
-    repo: https://github.com/paradedb/paradedb
-    ref: "v{v}"
-    subdir: pg_search
-    build: pgrx
-    pg: [15, 16, 17, 18]
-    versions: ["0.20.11"]
-    preload: [pg_search]
+    bundled:
+      # Header-only Boost.Graph, compiled into the module. Pinned to the newest
+      # Boost pgRouting's own CI tests (boost_version.yml stops at 1.86), so
+      # every platform builds the same code (Ubuntu 22.04 would give 1.74).
+      - name: boost
+        version: "1.86.0"
+        license: BSL-1.0
+        source: https://archives.boost.io/release/1.86.0/source/boost_1_86_0.tar.bz2
+        sha256: 1bed88e40401b2cb7a1f76d4bab499e352fa4d0c5f31c0dbae64e24d34d7513b
   pg_duckdb:
     wave: 2
     description: "DuckDB inside Postgres: fast analytics, Parquet and Iceberg."
@@ -425,6 +462,24 @@ extensions:
     pg: [14, 15, 16, 17, 18]
     versions: ["1.1.1"]
     preload: [pg_duckdb]
+    bundled:
+      # The git submodule pinned by pg_duckdb v1.1.1 (DuckDB 1.4.3), built as
+      # libduckdb with the json, icu, parquet and httpfs extensions inside.
+      - name: duckdb
+        version: "1.4.3"
+        license: MIT
+        source: https://github.com/duckdb/duckdb@d1dc88f950d456d72493df452dabdcd13aa413dd
+      - name: duckdb-httpfs
+        version: "9c7d349"
+        license: MIT
+        source: https://github.com/duckdb/duckdb-httpfs@9c7d34977b10346d0b4cbbde5df807d1dab0b2bf
+      # httpfs's HTTP client, built static (HTTP/HTTPS only) against the
+      # OpenSSL the Postgres tree ships.
+      - name: curl
+        version: "8.23.0"
+        license: curl
+        source: https://github.com/curl/curl/releases/download/curl-8_23_0/curl-8.23.0.tar.xz
+        sha256: 8dadd7d2536a314f982ad05a651b713f426bf7d02cc2c76cffb9796f2218e6c5
   vectorscale:
     wave: 2
     aliases: [pgvectorscale]
@@ -435,7 +490,7 @@ extensions:
     ref: "{v}"
     subdir: pgvectorscale
     build: pgrx
-    pg: [18]
+    pg: [14, 15, 16, 17, 18]
     versions: ["0.9.1"]
     requires: [vector]
   age:
@@ -445,10 +500,18 @@ extensions:
     license: Apache-2.0
     homepage: https://age.apache.org
     repo: https://github.com/apache/age
-    # AGE tags one release per Postgres major ("PG16/v1.5.0-rc0" is the
-    # release; there is no non-rc tag). Upstream has no PG18 tag yet, so 18 is
-    # left out (the module catalog listed it).
+    # AGE cuts one release per Postgres major, tagged "PG<major>/v<x>-rc0"
+    # (the GitHub release points at that tag; there is no non-rc tag). Each
+    # major takes its newest non-pre-release that builds against the x.0
+    # minor bundles are built on (2026-11-18): 1.6.0 on 15-16, 1.7.0 on 17,
+    # 1.8.0 on 18. PG14 stays on 1.5.0: PG14/v1.6.0 calls datum_image_hash(),
+    # which 14.0 lacks (14.24 has it), so a 1.6.0 module would not load on
+    # early 14.x. PG15's v1.8.0 is still a pre-release.
     ref: "PG{pg}/v{v}-rc0"
     may_preload: [age]
-    pg: [14, 15, 16, 17]
-    versions: ["1.6.0"]
+    lines:
+      14: { versions: ["1.5.0"] }
+      15: { versions: ["1.6.0"] }
+      16: { versions: ["1.6.0"] }
+      17: { versions: ["1.7.0"] }
+      18: { versions: ["1.8.0"] }

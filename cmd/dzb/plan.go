@@ -23,6 +23,10 @@ type matrixItem struct {
 	// EXTENSION name and the Postgres major — recipes/pgext/build.sh's inputs.
 	Ext     string `json:"ext,omitempty"`
 	PGMajor int    `json:"pg_major,omitempty"`
+	// Stage is 2 for a bundle that needs other bundles to verify (pgrouting
+	// needs postgis): build-pgext builds those after stage 1, handing them the
+	// stage-1 archives. 0 (omitted) for base engines.
+	Stage int `json:"stage,omitempty"`
 }
 
 func runPlan(args []string) error {
@@ -82,6 +86,10 @@ func (c *config) planItems(engines []string, published func(string) (map[string]
 			return nil, err
 		}
 		ext := cfg.pgext[engine] // zero for base engines
+		stage := 0
+		if ext.Name != "" {
+			stage = cfg.buildStage(ext.Name)
+		}
 		// Stable triple order so the emitted matrix is deterministic; an engine
 		// may restrict its platforms (see engineSpec.Triples).
 		triples := cfg.triplesFor(spec)
@@ -94,7 +102,7 @@ func (c *config) planItems(engines []string, published func(string) (map[string]
 				include = append(include, matrixItem{
 					Engine: engine, Version: full, Ref: spec.ref(v),
 					Triple: t, Runner: cfg.runnerFor(t),
-					Ext: ext.Name, PGMajor: ext.PGMajor,
+					Ext: ext.Name, PGMajor: ext.PGMajor, Stage: stage,
 				})
 			}
 		}

@@ -82,13 +82,20 @@ type addonEntry struct {
 	Requires    []string            `yaml:"requires,omitempty"`
 	Provides    map[string][]string `yaml:"provides,omitempty"`
 	Note        string              `yaml:"note,omitempty"`
-	Releases    map[string]addonRel `yaml:"releases"`
-	Channels    map[string]string   `yaml:"channels"`
+	// Bundled: the third-party libraries shipped inside every bundle, with
+	// licence and exact source (the GPL corresponding-source record).
+	Bundled  []bundledLib        `yaml:"bundled,omitempty"`
+	Releases map[string]addonRel `yaml:"releases"`
+	Channels map[string]string   `yaml:"channels"`
 }
 
 type addonRel struct {
 	// Engines are the engine majors this release is built for.
 	Engines []string `yaml:"engines"`
+	// Sources: engine major -> the exact upstream source it was built from,
+	// <repo>@<ref> (the same string as bundle.json source), so the source of
+	// every artifact is findable from the signed index.
+	Sources map[string]string `yaml:"sources"`
 	// Artifacts: engine major -> triple -> archive.
 	Artifacts map[string]map[string]artifact `yaml:"artifacts"`
 }
@@ -114,6 +121,7 @@ func addonMeta(s extSpec) addonEntry {
 		License: s.License, Homepage: s.Homepage,
 		Preload: s.Preload, MayPreload: s.MayPreload, Settings: s.Settings,
 		Env: s.Env, Requires: s.Requires, Provides: s.Provides, Note: strings.TrimSpace(s.Note),
+		Bundled:  s.Bundled,
 		Releases: map[string]addonRel{}, Channels: map[string]string{},
 	}
 	if len(s.Versions) > 0 {
@@ -209,6 +217,19 @@ func (c *config) checkAddons(root string) []string {
 					add("%s is built for Postgres %d but requires %s, which is not", n, m, r)
 				}
 			}
+		}
+	}
+
+	// Bundle dependencies: no cycles, and at most two build stages (the
+	// release workflow has a stage-1 and a stage-2 build job, nothing deeper).
+	for _, n := range c.builtExtensions() {
+		for _, d := range c.bundleDeps(n) {
+			if contains(c.bundleDeps(d), n) {
+				add("%s and %s need each other's bundles: a cycle no build order satisfies", n, d)
+			}
+		}
+		if st := c.buildStage(n); st > 2 {
+			add("%s is build stage %d; build-pgext.yml builds two stages", n, st)
 		}
 	}
 
@@ -321,7 +342,7 @@ func (c *config) buildAddonIndex(src mirrorSource, pub ed25519.PublicKey) (*addo
 					add("%s: %s also lists engine %s, which it should not", name, loc, other)
 				}
 			}
-			versions, _ := spec.forMajor(major)
+			versions, refTmpl := spec.forMajor(major)
 			want := map[string]bool{}
 			for _, v := range versions {
 				want[v] = true
@@ -340,6 +361,10 @@ func (c *config) buildAddonIndex(src mirrorSource, pub ed25519.PublicKey) (*addo
 						rel.Artifacts[mkey] = map[string]artifact{}
 					}
 					rel.Artifacts[mkey][t] = artifact{URL: a.URL, SHA256: strings.ToLower(a.SHA256)}
+					if rel.Sources == nil {
+						rel.Sources = map[string]string{}
+					}
+					rel.Sources[mkey] = spec.Repo + "@" + engineSpec{Ref: refTmpl}.ref(v)
 					entry.Releases[v] = rel
 				}
 				for t := range arts {
