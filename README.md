@@ -163,7 +163,26 @@ ad-hoc signed on macOS), `bundle.json` — is
   `extension_control_path = '<root>/share:$system'` (Postgres appends
   `/extension`) and `dynamic_library_path = '<root>/lib:$libdir'`, bundles first as the module writes them — then
   started with the bundle's preload and settings, `CREATE EXTENSION` (its
-  `requires` first) and `recipes/pgext/<name>/smoke.sql`.
+  `requires` first, then every name it `provides`) and
+  `recipes/pgext/<name>/smoke.sql`. A bundle that needs another bundle
+  (pgrouting and h3_postgis need postgis, vectorscale needs vector) is
+  verified with that bundle installed beside it, taken from
+  `PGEXT_DEPS_DIR`, the archive's folder or its published release.
+- **Licences**: every archive carries `share/licenses/<name>/` (the
+  extension's own LICENSE/COPYING) and one folder per `bundled` library;
+  `vendored-libraries.txt` lists each library relocation copied in, and from
+  where. The build and verify both fail when one is missing.
+- **Bundled libraries** (`bundled:` in the catalog — PostGIS's GEOS, PROJ,
+  SQLite, GDAL, json-c, protobuf-c and PCRE2; pg_duckdb's DuckDB and curl;
+  pgRouting's header-only Boost; h3's core library): built from the pinned
+  tarball or commit with the bundle's deployment target, into a prefix cached
+  per (triple, pinned set, recipe) under `~/.cache/doze-binaries/pgext/deps/`
+  and shared by all majors. Nothing comes from Homebrew or the distro at run
+  time; OpenSSL, libxml2 and zlib are the ones the Postgres engine itself
+  loads.
+- **Build stages**: `dzb plan --pgext` marks a bundle that needs another
+  bundle to verify as stage 2; `build-pgext.yml` builds stage 2 after stage 1
+  and hands it the stage-1 archives.
 - **macOS**: the trees' PGXS flags name the CI runner's SDK, so builds override
   `PG_SYSROOT` (and give pgrx a `pg_config` shim), and the deployment target
   is the tree's own (`minos 14.0`) — otherwise clang targets the build Mac's
@@ -177,7 +196,8 @@ ad-hoc signed on macOS), `bundle.json` — is
 `extensions:` is the only place doze describes an extension: the build fields
 above, and what users and the module need — `wave`, `description`,
 `license`, `homepage`, `aliases`, `preload`, `may_preload`, `settings`,
-`env`, `requires`, `provides`, `note`. Nothing is compiled into a module.
+`env`, `requires`, `provides`, `note`, `bundled`. Nothing is compiled into a
+module.
 `extension_waves` lists the waves that are built; entries of other waves are
 modelled and validated but expand into no engine.
 
@@ -205,6 +225,15 @@ addons:
         artifacts:
           "17": {aarch64-apple-darwin: {url, sha256, sig}, …}
     channels: {stable: "18.0"}
+  postgis:
+    …
+    bundled:                      # third-party code shipped inside each bundle
+      - {name: geos, version: 3.14.1, license: LGPL-2.1-or-later, source: <tarball URL>, sha256: …}
+    releases:
+      3.6.4:
+        engines: ["14", …, "18"]
+        sources: {"14": https://github.com/postgis/postgis.6.4, …}   # exact upstream source per major
+        artifacts: …
 signature: "…"
 ```
 
