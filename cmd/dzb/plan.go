@@ -23,6 +23,10 @@ type matrixItem struct {
 	// EXTENSION name and the Postgres major — recipes/pgext/build.sh's inputs.
 	Ext     string `json:"ext,omitempty"`
 	PGMajor int    `json:"pg_major,omitempty"`
+	// Stage is 2 for a bundle that needs other bundles to verify (pgrouting
+	// needs postgis): build-pgext builds those after stage 1, handing them the
+	// stage-1 archives. 0 (omitted) for base engines.
+	Stage int `json:"stage,omitempty"`
 }
 
 func runPlan(args []string) error {
@@ -53,9 +57,17 @@ func runPlan(args []string) error {
 	// (postgres: 74 versions x 3 triples = 222), so refuse loudly instead of
 	// letting a catalog addition wedge the release: stage the new versions
 	// across two pushes (the first publish shrinks the second plan).
+	// The cap is per matrix: build-pgext.yml runs one matrix per build stage
+	// (stage 0 is a base engine, built by build-engine.yml per engine).
 	const matrixCap = 256
-	if len(include) > matrixCap {
-		return fmt.Errorf("plan has %d jobs, over GitHub's %d-per-matrix limit — stage the catalog additions across smaller pushes", len(include), matrixCap)
+	perStage := map[int]int{}
+	for _, it := range include {
+		perStage[it.Stage]++
+	}
+	for stage, n := range perStage {
+		if n > matrixCap {
+			return fmt.Errorf("plan has %d stage-%d jobs, over GitHub's %d-per-matrix limit — stage the catalog additions across smaller pushes", n, stage, matrixCap)
+		}
 	}
 
 	out, err := json.Marshal(struct {
@@ -82,6 +94,10 @@ func (c *config) planItems(engines []string, published func(string) (map[string]
 			return nil, err
 		}
 		ext := cfg.pgext[engine] // zero for base engines
+		stage := 0
+		if ext.Name != "" {
+			stage = cfg.buildStage(ext.Name)
+		}
 		// Stable triple order so the emitted matrix is deterministic; an engine
 		// may restrict its platforms (see engineSpec.Triples).
 		triples := cfg.triplesFor(spec)
@@ -94,7 +110,7 @@ func (c *config) planItems(engines []string, published func(string) (map[string]
 				include = append(include, matrixItem{
 					Engine: engine, Version: full, Ref: spec.ref(v),
 					Triple: t, Runner: cfg.runnerFor(t),
-					Ext: ext.Name, PGMajor: ext.PGMajor,
+					Ext: ext.Name, PGMajor: ext.PGMajor, Stage: stage,
 				})
 			}
 		}

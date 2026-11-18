@@ -355,15 +355,18 @@ func TestRealCatalogAddons(t *testing.T) {
 		t.Fatalf("versions.yaml extensions:\n  %s", strings.Join(p, "\n  "))
 	}
 	built := cfg.builtExtensions()
-	if len(built) != 10 {
-		t.Errorf("built set = %v, want wave 1's 10", built)
+	if len(built) != 16 {
+		t.Errorf("built set = %v, want wave 1's 10 and wave 2's 6", built)
 	}
-	for _, n := range []string{"postgis", "timescaledb", "pg_search"} {
-		if contains(built, n) {
-			t.Errorf("%s is wave 2 and must not be built", n)
+	for _, n := range []string{"postgis", "h3", "pgrouting", "pg_duckdb", "vectorscale", "age"} {
+		if !contains(built, n) {
+			t.Errorf("%s is wave 2 and must be built", n)
 		}
-		if _, ok := cfg.Extensions[n]; !ok {
-			t.Errorf("%s should be modelled in the catalog", n)
+	}
+	// Left out on purpose (the owner's licence call): not even catalogued.
+	for _, n := range []string{"timescaledb", "pg_search"} {
+		if _, ok := cfg.Extensions[n]; ok {
+			t.Errorf("%s must not be in the catalog", n)
 		}
 	}
 	// What the Go module catalog compiled in, restored.

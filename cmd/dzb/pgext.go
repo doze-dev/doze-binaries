@@ -80,6 +80,61 @@ type extSpec struct {
 	// Requires lists extensions (by CREATE EXTENSION name) that must be
 	// created first, possibly from other bundles.
 	Requires []string `yaml:"requires"`
+	// Bundled are the third-party libraries built from source and shipped
+	// inside the bundle (PostGIS's GEOS, PROJ, GDAL…), each with its licence
+	// and exact source, so the bundle's licences and corresponding source are
+	// on record. The recipe builds exactly these (dzb pgext env exports each
+	// as PGEXT_DEP_<NAME>_{VERSION,URL,SHA256}) and the add-on index publishes
+	// them. Libraries the Postgres tree itself ships are not listed here.
+	Bundled []bundledLib `yaml:"bundled"`
+}
+
+// bundledLib is one third-party library shipped inside a bundle.
+type bundledLib struct {
+	// Name is the library's short name (geos); the recipe's key for it and
+	// the folder its licence ships in (share/licenses/<name>/).
+	Name string `yaml:"name" json:"name"`
+	// Version is the upstream version built.
+	Version string `yaml:"version" json:"version"`
+	// License is the library's licence (SPDX where there is one).
+	License string `yaml:"license" json:"license"`
+	// Source is where its exact source is: a release tarball URL, or
+	// <git repo>@<tag or commit> for code that comes as a git checkout.
+	Source string `yaml:"source" json:"source"`
+	// SHA256 is the tarball's digest (empty for a git source).
+	SHA256 string `yaml:"sha256,omitempty" json:"sha256,omitempty"`
+	// Versions limits the entry to these versions of the extension, for a
+	// line that pins different code (pg_duckdb 1.0.0 bundles another DuckDB
+	// than 1.1.1). Empty means every version.
+	Versions []string `yaml:"versions,omitempty" json:"versions,omitempty"`
+}
+
+// appliesTo reports whether the library is bundled with extension version v.
+func (b bundledLib) appliesTo(v string) bool {
+	return len(b.Versions) == 0 || contains(b.Versions, v)
+}
+
+// bundledFor is what one version of the extension bundles.
+func (s extSpec) bundledFor(v string) []bundledLib {
+	var out []bundledLib
+	for _, b := range s.Bundled {
+		if b.appliesTo(v) {
+			out = append(out, b)
+		}
+	}
+	return out
+}
+
+// allVersions is every version the extension catalogues, on any major.
+func (s extSpec) allVersions() map[string]bool {
+	all := map[string]bool{}
+	for _, m := range s.majors() {
+		vs, _ := s.forMajor(m)
+		for _, v := range vs {
+			all[v] = true
+		}
+	}
+	return all
 }
 
 // extLine is one Postgres major's own release line.
@@ -225,7 +280,106 @@ func validateExt(name string, s extSpec) error {
 			return fmt.Errorf("extension %s: bad version %q", name, v)
 		}
 	}
+	all := s.allVersions()
+	for i, b := range s.Bundled {
+		if b.Name == "" || strings.Trim(b.Name, "abcdefghijklmnopqrstuvwxyz0123456789-_") != "" {
+			return fmt.Errorf("extension %s: bundled library %q: name must be lower-case letters, digits, - or _", name, b.Name)
+		}
+		for _, v := range b.Versions {
+			if !all[v] {
+				return fmt.Errorf("extension %s: bundled library %s names version %s, which is not catalogued", name, b.Name, v)
+			}
+		}
+		// A name may appear once per extension version: the same library at
+		// another version for another line.
+		for _, o := range s.Bundled[:i] {
+			if o.Name != b.Name {
+				continue
+			}
+			for v := range all {
+				if o.appliesTo(v) && b.appliesTo(v) {
+					return fmt.Errorf("extension %s: bundled library %s is listed twice for version %s", name, b.Name, v)
+				}
+			}
+		}
+		if b.Version == "" || b.License == "" || b.Source == "" {
+			return fmt.Errorf("extension %s: bundled library %s needs version, license and source", name, b.Name)
+		}
+		isGit := strings.Contains(b.Source, "@")
+		if !isGit && !strings.HasPrefix(b.Source, "https://") {
+			return fmt.Errorf("extension %s: bundled library %s: source must be an https tarball URL or <repo>@<ref>", name, b.Name)
+		}
+		if !isGit && (len(b.SHA256) != 64 || strings.Trim(b.SHA256, "0123456789abcdef") != "") {
+			return fmt.Errorf("extension %s: bundled library %s: a tarball source needs its lower-case hex sha256", name, b.Name)
+		}
+	}
 	return nil
+}
+
+// depEnvName is a bundled library's name as a shell variable fragment.
+func depEnvName(name string) string {
+	return strings.ToUpper(strings.ReplaceAll(name, "-", "_"))
+}
+
+// bundleDeps lists the other catalogued extensions a bundle needs present to
+// CREATE everything it ships: its own requires, and what each provided name
+// requires, transitively, dependencies first. Contrib names and names the
+// bundle provides itself are not bundles and are left out.
+func (c *config) bundleDeps(name string) []string {
+	var out []string
+	seen := map[string]bool{name: true}
+	var visit func(n string)
+	visit = func(n string) {
+		s := c.Extensions[n]
+		reqs := append([]string(nil), s.Requires...)
+		for _, p := range sortedKeysList(s.Provides) {
+			reqs = append(reqs, s.Provides[p]...)
+		}
+		for _, r := range reqs {
+			if seen[r] {
+				continue
+			}
+			if _, ok := s.Provides[r]; ok {
+				continue
+			}
+			if _, ok := c.Extensions[r]; !ok {
+				continue // contrib
+			}
+			seen[r] = true
+			visit(r)
+			out = append(out, r)
+		}
+	}
+	visit(name)
+	return out
+}
+
+// buildStage is 1 for a bundle that needs no other bundle to verify, else
+// one more than the deepest bundle it needs: the release builds stage 2
+// after stage 1 so a dependent verifies against freshly built dependencies.
+// A dependency cycle (which checkAddons reports) stops at depth 10.
+func (c *config) buildStage(name string) int { return c.stageAt(name, 0) }
+
+func (c *config) stageAt(name string, depth int) int {
+	stage := 1
+	if depth > 10 {
+		return stage
+	}
+	for _, d := range c.bundleDeps(name) {
+		if s := c.stageAt(d, depth+1) + 1; s > stage {
+			stage = s
+		}
+	}
+	return stage
+}
+
+func sortedKeysList[V any](m map[string]V) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
 }
 
 // waveBuilt reports whether a catalog wave is in the built set.
@@ -409,11 +563,59 @@ func (c *config) pgextEnv(name, version string, major int) (string, error) {
 		{"PGEXT_PG_BASE", base},
 		{"PGEXT_PG_NEWEST", newest},
 	}
+	var names []string
+	for _, d := range e.Spec.bundledFor(version) {
+		names = append(names, d.Name)
+		p := "PGEXT_DEP_" + depEnvName(d.Name)
+		vars = append(vars, [2]string{p + "_VERSION", d.Version}, [2]string{p + "_URL", d.Source}, [2]string{p + "_SHA256", d.SHA256})
+	}
+	vars = append(vars, [2]string{"PGEXT_BUNDLED", strings.Join(names, " ")})
 	var b strings.Builder
 	for _, kv := range vars {
 		fmt.Fprintf(&b, "%s=%s\n", kv[0], shellQuote(kv[1]))
 	}
 	return b.String(), nil
+}
+
+// pgextDeps renders `dzb pgext deps`: one line per bundle the extension
+// needs at verify time, dependencies first: "<name> <version>", the newest
+// version catalogued for the major.
+func (c *config) pgextDeps(name string, major int) (string, error) {
+	if _, ok := c.Extensions[name]; !ok {
+		return "", fmt.Errorf("no extension %s in versions.yaml", name)
+	}
+	var b strings.Builder
+	for _, d := range c.bundleDeps(name) {
+		vs, _ := c.Extensions[d].forMajor(major)
+		if len(vs) == 0 || !c.waveBuilt(c.Extensions[d].Wave) {
+			return "", fmt.Errorf("%s needs %s, which is not built for Postgres %d", name, d, major)
+		}
+		fmt.Fprintf(&b, "%s %s\n", d, newestVersion(vs))
+	}
+	return b.String(), nil
+}
+
+// bundleArtifact resolves a published bundle archive from its engine's
+// mirror index: "<url> <sha256>", or found=false when it is not published.
+func bundleArtifact(name string, major int, version, triple string) (url, sum string, found bool, err error) {
+	engine := pgextEngineKey(name, major)
+	body, _, err := mirrorSource{root: defaultMirrorRoot()}.read(engine)
+	if err != nil || body == nil {
+		return "", "", false, err
+	}
+	var idx manifest
+	if err := yaml.Unmarshal(body, &idx); err != nil {
+		return "", "", false, fmt.Errorf("parsing the %s index: %w", engine, err)
+	}
+	em := idx.Engines[engine]
+	if em == nil {
+		return "", "", false, nil
+	}
+	a, ok := em.Artifacts[version][triple]
+	if !ok {
+		return "", "", false, nil
+	}
+	return a.URL, a.SHA256, true, nil
 }
 
 // pgtreeArtifact resolves a published postgres archive (full version, triple)
@@ -455,14 +657,76 @@ func pgtreeArtifact(full, triple string) (string, string, error) {
 //	dzb pgext env <name> <version> <pg_major>          shell assignments to eval
 //	dzb pgext bundle-json <name> <version> <pg_major>  the bundle.json contents
 //	dzb pgext pgtree <base|newest> <pg_major> <triple> "<full> <url> <sha256>"
+//	dzb pgext deps <name> <pg_major>                   bundles needed to verify it, "<name> <version>" per line
+//	dzb pgext bundled <name> [version]                 its bundled libraries (for that version), one per line
+//	dzb pgext provides <name>                          the further CREATE EXTENSION names it ships
+//	dzb pgext artifact <name> <pg_major> <version> <triple>  a published bundle: "<url> <sha256>" (exit 3 if none)
 func runPgext(args []string) error {
-	usage := fmt.Errorf("usage: dzb pgext env|bundle-json <name> <version> <pg_major> | dzb pgext pgtree base|newest <pg_major> <triple>")
-	if len(args) != 4 {
+	usage := fmt.Errorf("usage: dzb pgext env|bundle-json <name> <version> <pg_major> | pgtree base|newest <pg_major> <triple> | deps <name> <pg_major> | bundled <name> [version] | artifact <name> <pg_major> <version> <triple>")
+	if len(args) == 0 {
 		return usage
 	}
 	cfg, err := loadConfig()
 	if err != nil {
 		return err
+	}
+	switch args[0] {
+	case "deps":
+		if len(args) != 3 {
+			return usage
+		}
+		major, err := strconv.Atoi(args[2])
+		if err != nil {
+			return fmt.Errorf("pg_major %q: %w", args[2], err)
+		}
+		out, err := cfg.pgextDeps(args[1], major)
+		if err != nil {
+			return err
+		}
+		fmt.Print(out)
+		return nil
+	case "bundled", "provides":
+		if len(args) != 2 && !(args[0] == "bundled" && len(args) == 3) {
+			return usage
+		}
+		s, ok := cfg.Extensions[args[1]]
+		if !ok {
+			return fmt.Errorf("no extension %s in versions.yaml", args[1])
+		}
+		if args[0] == "provides" {
+			for _, p := range sortedKeysList(s.Provides) {
+				fmt.Println(p)
+			}
+			return nil
+		}
+		libs := s.Bundled
+		if len(args) == 3 {
+			libs = s.bundledFor(args[2])
+		}
+		for _, b := range libs {
+			fmt.Println(b.Name)
+		}
+		return nil
+	case "artifact":
+		if len(args) != 5 {
+			return usage
+		}
+		major, err := strconv.Atoi(args[2])
+		if err != nil {
+			return fmt.Errorf("pg_major %q: %w", args[2], err)
+		}
+		url, sum, found, err := bundleArtifact(args[1], major, args[3], args[4])
+		if err != nil {
+			return err
+		}
+		if !found {
+			os.Exit(3)
+		}
+		fmt.Printf("%s %s\n", url, sum)
+		return nil
+	}
+	if len(args) != 4 {
+		return usage
 	}
 	switch args[0] {
 	case "env", "bundle-json":

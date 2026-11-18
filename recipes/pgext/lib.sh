@@ -22,12 +22,18 @@
 #
 # Per-extension hooks: recipes/pgext/<name>/hooks.sh, sourced when present,
 # may define any of
+#   pgext_hook_deps         <triple>; before the build, in the build shell:
+#                           install build tools, build the versions.yaml
+#                           `bundled` libraries (pgext_dep_fetch), ship
+#                           their licences (pgext_dep_license) and export
+#                           PGEXT_EXTRA_LIBDIRS (where relocation finds them)
 #   pgext_hook_pre_build    after the source is fetched, in the source dir
 #   pgext_hook_build        replaces the standard PGXS/pgrx build+install
 #                           (must install into "$PGEXT_STAGE" like DESTDIR)
 #   pgext_hook_post_collect after the bundle tree is assembled, before
 #                           relocation (vendor extra data, drop files)
-# and may set PGEXT_MAKE_ARGS (extra make arguments, an array).
+# and may set PGEXT_MAKE_ARGS (extra make arguments, an array) and, for pgrx,
+# PGEXT_PGRX_FEATURES (cargo features beyond pg<major>, space-separated).
 # recipes/pgext/<name>/smoke.sql is the verify step's smoke query.
 
 # ── paths and small helpers ──────────────────────────────────────────────────
@@ -181,9 +187,15 @@ pgext_cargo_pgrx() {
     lock="$(dirname "$lock")"
   done
   lock="$lock/Cargo.lock"
-  [ -f "$lock" ] || pgext_die "pgrx build needs a Cargo.lock (in $src or its workspace)"
-  ver="$(awk '/^name = "pgrx"$/ {getline; gsub(/[^0-9.a-z-]/, "", $3); print $3; exit}' "$lock")"
-  [ -n "$ver" ] || pgext_die "no pgrx version in $lock"
+  if [ -f "$lock" ]; then
+    ver="$(awk '/^name = "pgrx"$/ {getline; gsub(/[^0-9.a-z-]/, "", $3); print $3; exit}' "$lock")"
+  else
+    # No lock committed upstream (pgvectorscale): the crate must then pin pgrx
+    # exactly (pgrx = "=0.16.1"), or the build is refused.
+    lock="$src/Cargo.toml"
+    ver="$(sed -nE 's/^pgrx[[:space:]]*=[[:space:]]*\{?[^"]*"=([0-9][0-9.a-z-]*)".*/\1/p' "$lock" | head -1)"
+  fi
+  [ -n "$ver" ] || pgext_die "no exact pgrx version in $lock (a pgrx build needs a Cargo.lock or pgrx = \"=x.y.z\")"
   dir="$PGEXT_CACHE/pgrx/$ver-rust$PGEXT_RUST_TOOLCHAIN"
   if [ ! -x "$dir/bin/cargo-pgrx" ]; then
     pgext_log "installing cargo-pgrx $ver (rust $PGEXT_RUST_TOOLCHAIN)"
@@ -218,7 +230,7 @@ pgext_build_pgrx() {
   mkdir -p "$PGRX_HOME"
   (cd "$src" && cargo pgrx init "--pg$major" "$pgc" >&2)
   (cd "$src" && cargo pgrx package --pg-config "$pgc" --no-default-features \
-      --features "pg$major" --out-dir "$PGEXT_STAGE" >&2)
+      --features "pg$major${PGEXT_PGRX_FEATURES:+ $PGEXT_PGRX_FEATURES}" --out-dir "$PGEXT_STAGE" >&2)
 }
 
 # ── collect into the contract layout ─────────────────────────────────────────
@@ -277,9 +289,10 @@ pgext_relocate_linux() {
         pgext_is_system_linux "$name" && continue
         [ "$path" = "not" ] && pgext_die "$(basename "$f"): $name not found"
         [ -e "$bundle/lib/$name" ] && continue
-        pgext_log "vendoring $name (from $path)"
+        pgext_log "vendoring $name (from $path, needed by $(basename "$f"))"
+        echo "$name $path (needed by $(basename "$f"))" >> "$PGEXT_WORK/vendored.txt"
         cp -L "$path" "$bundle/lib/$name" && chmod u+w "$bundle/lib/$name"
-      done < <(LD_LIBRARY_PATH="$bundle/lib:$pgtree/lib" ldd "$f" 2>/dev/null | awk '/=>/ {print $1" "$3}')
+      done < <(LD_LIBRARY_PATH="$bundle/lib:$pgtree/lib${PGEXT_EXTRA_LIBDIRS:+:$PGEXT_EXTRA_LIBDIRS}" ldd "$f" 2>/dev/null | awk '/=>/ {print $1" "$3}')
     done < <(find "$bundle/bin" "$bundle/lib" -type f)
   done
   # Strip before patchelf (see scripts/bundle-linux-deps.sh for why).
@@ -314,13 +327,16 @@ pgext_macho_fix() {
     esac
     if [ -z "$src" ] || [ ! -e "$src" ]; then
       local d
-      for d in "$bundle/lib" "$pgtree/lib" "$origin" "$bp/lib"; do
+      local -a extra=()
+      [ -z "${PGEXT_EXTRA_LIBDIRS:-}" ] || IFS=: read -r -a extra <<< "$PGEXT_EXTRA_LIBDIRS"
+      for d in "$bundle/lib" "$pgtree/lib" "$origin" ${extra[@]+"${extra[@]}"} "$bp/lib"; do
         [ -e "$d/$base" ] && { src="$d/$base"; break; }
       done
     fi
     [ -n "$src" ] && [ -e "$src" ] || pgext_die "$(basename "$f"): cannot find $dep"
     if [ ! -e "$bundle/lib/$base" ]; then
-      pgext_log "vendoring $base (from $src)"
+      pgext_log "vendoring $base (from $src, needed by $(basename "$f"))"
+      echo "$base $src (needed by $(basename "$f"))" >> "$PGEXT_WORK/vendored.txt"
       cp -L "$src" "$bundle/lib/$base" && chmod u+w "$bundle/lib/$base"
       install_name_tool -id "@rpath/$base" "$bundle/lib/$base" 2>/dev/null || true
       pgext_macho_fix "$bundle/lib/$base" "$(dirname "$src")" "$bundle" "$pgtree"
@@ -340,6 +356,77 @@ pgext_relocate_macos() {
     file -b "$f" | grep -q Mach-O || continue
     codesign --force --sign - "$f" 2>/dev/null || pgext_die "codesign $f"
   done < <(find "$bundle/bin" "$bundle/lib" -type f)
+}
+
+# ── bundled third-party libraries and licences ───────────────────────────────
+# A bundle carries its own licence and the licence of every library built
+# into it, under share/licenses/<name>/: the extension's from its source root,
+# and each versions.yaml `bundled` library's from its source, put there by the
+# recipe's hooks with pgext_dep_license. The build fails when one is missing.
+# share/licenses/<name>/vendored-libraries.txt lists every library the
+# relocation step copied in, and where from.
+
+# pgext_dep_fetch <dep> <dest>: download the dep's pinned tarball (versions.yaml
+# bundled: source + sha256) into the cache, check it, and unpack it into a new
+# <dest>; echo the unpacked source directory.
+pgext_dep_fetch() {
+  local dep="$1" dest="$2" v url sum tgz top
+  v="PGEXT_DEP_$(echo "$dep" | tr 'a-z-' 'A-Z_')"
+  url="$(eval echo "\${${v}_URL:-}")"; sum="$(eval echo "\${${v}_SHA256:-}")"
+  [ -n "$url" ] && [ -n "$sum" ] || pgext_die "$dep is not a bundled tarball in versions.yaml"
+  mkdir -p "$PGEXT_CACHE/src"
+  tgz="$PGEXT_CACHE/src/$sum-$(basename "$url")"
+  if [ ! -f "$tgz" ]; then
+    pgext_log "downloading $dep ($url)"
+    curl -fsSL --retry 3 "$url" -o "$tgz.part" || pgext_die "download $url"
+    mv "$tgz.part" "$tgz"
+  fi
+  [ "$(pgext_sha256 "$tgz")" = "$sum" ] || { rm -f "$tgz"; pgext_die "sha256 mismatch for $url"; }
+  rm -rf "$dest" && mkdir -p "$dest"
+  tar -C "$dest" -xf "$tgz"
+  top="$(find "$dest" -mindepth 1 -maxdepth 1 -type d | head -1)"
+  [ -n "$top" ] || pgext_die "$dep: empty tarball"
+  echo "$top"
+}
+
+# pgext_dep_license <dep> <file>...: ship these licence files for a bundled
+# library (or for the extension itself) as share/licenses/<dep>/.
+pgext_dep_license() {
+  local dep="$1" f; shift
+  mkdir -p "$PGEXT_WORK/licenses/$dep"
+  for f in "$@"; do
+    [ -f "$f" ] || pgext_die "$dep: licence file $f does not exist"
+    cp "$f" "$PGEXT_WORK/licenses/$dep/"
+  done
+}
+
+# pgext_own_license <src_root>: the extension's licence files from the top of
+# its source checkout (and the subdir it builds in, if any).
+pgext_own_license() {
+  local dir f found=0
+  for dir in "$@"; do
+    for f in "$dir"/LICENSE* "$dir"/LICENCE* "$dir"/COPYING* "$dir"/COPYRIGHT* "$dir"/NOTICE*; do
+      [ -f "$f" ] || continue
+      pgext_dep_license "$PGEXT_NAME" "$f"; found=1
+    done
+  done
+  [ "$found" = 1 ] || pgext_die "no LICENSE/COPYING file at the top of the $PGEXT_NAME source"
+}
+
+# pgext_place_licenses <bundle>: move the collected licences into the bundle
+# and fail if the extension's own or any bundled library's is missing.
+pgext_place_licenses() {
+  local bundle="$1" d
+  mkdir -p "$bundle/share/licenses"
+  cp -R "$PGEXT_WORK/licenses/." "$bundle/share/licenses/"
+  for d in "$PGEXT_NAME" $PGEXT_BUNDLED; do
+    [ -n "$(ls -A "$bundle/share/licenses/$d" 2>/dev/null)" ] \
+      || pgext_die "share/licenses/$d is empty: every bundled library ships its licence (pgext_dep_license)"
+  done
+  if [ -f "$PGEXT_WORK/vendored.txt" ]; then
+    sed -e "s#$PGEXT_WORK#<build>#g" -e "s#$HOME#~#g" "$PGEXT_WORK/vendored.txt" \
+      > "$bundle/share/licenses/$PGEXT_NAME/vendored-libraries.txt"
+  fi
 }
 
 # ── the whole build ──────────────────────────────────────────────────────────
@@ -365,10 +452,15 @@ pgext_build() {
   src="$PGEXT_WORK/src"
   pgext_fetch_source "$PGEXT_REPO" "$PGEXT_REF" "$src"
   [ -z "$PGEXT_SUBDIR" ] || src="$src/$PGEXT_SUBDIR"
+  pgext_own_license "$PGEXT_WORK/src" ${PGEXT_SUBDIR:+"$src"}
   PGEXT_MAKE_ARGS=()
   local hooks="$PGEXT_ROOT/recipes/pgext/$name/hooks.sh"
   # shellcheck disable=SC1090
   [ -f "$hooks" ] && . "$hooks"
+  # Bundled libraries are built here, in this shell, so what the hook exports
+  # (PGEXT_EXTRA_LIBDIRS, CPATH, PKG_CONFIG_PATH …) reaches the build and the
+  # relocation step.
+  if declare -F pgext_hook_deps >/dev/null; then pgext_hook_deps "$triple"; fi
   if declare -F pgext_hook_pre_build >/dev/null; then (cd "$src" && pgext_hook_pre_build); fi
   mkdir -p "$PGEXT_STAGE"
   if declare -F pgext_hook_build >/dev/null; then
@@ -390,6 +482,7 @@ pgext_build() {
     *linux*)  pgext_relocate_linux "$bundle" "$pgtree" ;;
     *darwin*) pgext_relocate_macos "$bundle" "$pgtree" ;;
   esac
+  pgext_place_licenses "$bundle"
   pgext_dzb pgext bundle-json "$name" "$version" "$major" > "$bundle/bundle.json"
 
   "$PGEXT_ROOT/scripts/package.sh" "$bundle" "$base" "$out"

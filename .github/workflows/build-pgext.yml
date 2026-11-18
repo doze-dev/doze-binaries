@@ -40,25 +40,39 @@ jobs:
     outputs:
       matrix: ${{ steps.plan.outputs.matrix }}
       has_work: ${{ steps.plan.outputs.has_work }}
+      matrix2: ${{ steps.plan.outputs.matrix2 }}
+      has_work2: ${{ steps.plan.outputs.has_work2 }}
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-go@v6
         with:
           go-version: "stable"
       # Skips every (bundle, version, triple) already in that bundle engine's
-      # published index — published archives are immutable.
+      # published index — published archives are immutable. Split by build
+      # stage: a stage-2 bundle needs a stage-1 bundle to verify (pgrouting
+      # needs postgis), so it builds after stage 1, with its archives.
       - id: plan
         run: |
-          matrix="$(go run ./cmd/dzb plan --pgext)"
-          echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
-          if [ "$matrix" = '{"include":[]}' ]; then
-            echo "has_work=false" >> "$GITHUB_OUTPUT"
-            echo "No new extension bundles to build."
-          else
-            echo "has_work=true" >> "$GITHUB_OUTPUT"
-            echo "$matrix" | jq -r '.include[] | "\(.engine) \(.version) \(.triple)"'
-          fi
+          all="$(go run ./cmd/dzb plan --pgext)"
+          for s in 1 2; do
+            m="$(echo "$all" | jq -c --argjson s "$s" '{include: [.include[] | select((.stage // 1) == $s)]}')"
+            out=matrix; work=has_work
+            [ "$s" = 1 ] || { out=matrix2; work=has_work2; }
+            echo "$out=$m" >> "$GITHUB_OUTPUT"
+            if [ "$m" = '{"include":[]}' ]; then
+              echo "$work=false" >> "$GITHUB_OUTPUT"
+              echo "Stage $s: no new extension bundles to build."
+            else
+              echo "$work=true" >> "$GITHUB_OUTPUT"
+              echo "Stage $s:"
+              echo "$m" | jq -r '.include[] | "  \(.engine) \(.version) \(.triple)"'
+            fi
+          done
 
+  # Stage 1 and stage 2 run the same steps; stage 2 (bundles that need another
+  # bundle to verify) starts after stage 1 and is handed its archives. A
+  # dependency built earlier and not rebuilt now is downloaded from its
+  # published release instead (recipes/pgext/verify.sh).
   build:
     needs: plan
     if: needs.plan.outputs.has_work == 'true'
@@ -70,7 +84,7 @@ jobs:
       # so more run at once than a base engine's one-at-a-time.
       max-parallel: 8
       matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
-    steps:
+    steps: &build_steps
       - uses: actions/checkout@v5
       - uses: actions/setup-go@v6
         with:
@@ -81,9 +95,23 @@ jobs:
       # download anyway; the cache only skips the download).
       - uses: actions/cache@v4
         with:
-          path: ~/.cache/doze-binaries/pgext
+          path: |
+            ~/.cache/doze-binaries/pgext/pg
+            ~/.cache/doze-binaries/pgext/pgrx
           key: pgext-${{ matrix.triple }}-pg${{ matrix.pg_major }}-${{ hashFiles('versions.yaml', 'recipes/pgext/lib.sh') }}
           restore-keys: pgext-${{ matrix.triple }}-pg${{ matrix.pg_major }}-
+      # Bundled libraries built from source (PostGIS's GEOS/PROJ/GDAL…,
+      # pg_duckdb's libduckdb) do not depend on the Postgres major: one cache
+      # per (triple, extension), shared by its majors. Their build prefixes are
+      # named by a hash of exactly what they were built from, so a stale entry
+      # is never used, only ignored.
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/doze-binaries/pgext/deps
+            ~/.cache/doze-binaries/pgext/src
+          key: pgext-deps-${{ matrix.triple }}-${{ matrix.ext }}-${{ hashFiles('versions.yaml', 'recipes/pgext/**') }}
+          restore-keys: pgext-deps-${{ matrix.triple }}-${{ matrix.ext }}-
       - uses: actions/cache@v4
         with:
           path: |
@@ -92,13 +120,24 @@ jobs:
             ~/.cargo/git/db
           key: cargo-${{ matrix.triple }}-${{ matrix.ext }}-${{ matrix.version }}
           restore-keys: cargo-${{ matrix.triple }}-
+      # Stage 2 only: the stage-1 archives for this triple.
+      - if: ${{ matrix.stage == 2 }}
+        uses: actions/download-artifact@v8
+        with:
+          pattern: pgext-*-${{ matrix.triple }}
+          path: deps
+          merge-multiple: true
       # build.sh builds, packages and then verifies the bundle (smoke.sh ->
       # recipes/pgext/verify.sh): installed into the base-minor and the
-      # newest-minor tree, preloaded, CREATE EXTENSION, smoke query.
+      # newest-minor tree, preloaded, CREATE EXTENSION (and each name it
+      # provides), smoke query — with the bundles it needs beside it.
       - name: Build + verify
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           chmod +x scripts/*.sh recipes/*/*.sh
-          recipes/pgext/build.sh "${{ matrix.ext }}" "${{ matrix.version }}" \
+          mkdir -p deps
+          PGEXT_DEPS_DIR="$PWD/deps" recipes/pgext/build.sh "${{ matrix.ext }}" "${{ matrix.version }}" \
             "${{ matrix.pg_major }}" "${{ matrix.triple }}" dist
       - uses: actions/upload-artifact@v6
         with:
@@ -107,8 +146,19 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
-  publish:
+  build2:
     needs: [plan, build]
+    if: ${{ !cancelled() && needs.plan.outputs.has_work2 == 'true' }}
+    name: ${{ matrix.engine }} ${{ matrix.version }} (${{ matrix.triple }})
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      max-parallel: 8
+      matrix: ${{ fromJSON(needs.plan.outputs.matrix2) }}
+    steps: *build_steps
+
+  publish:
+    needs: [plan, build, build2]
     # Publish whatever built (append-only), even if some builds failed — and
     # run with nothing new too: every bundle index is re-signed and the add-on
     # index regenerated, so a catalog change that builds nothing (a
