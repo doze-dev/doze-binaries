@@ -16,7 +16,7 @@
 
 duckdb_cache_dir() {
   local key
-  key="$( { echo "$1"; echo "${MACOSX_DEPLOYMENT_TARGET:-}"; env | grep '^PGEXT_DEP_' | sort; declare -f duckdb_build_curl pgext_hook_pre_build duckdb_openssl_root; } | shasum -a 256 | cut -c1-16)"
+  key="$( { echo "$1"; echo "${MACOSX_DEPLOYMENT_TARGET:-}"; for v in $(compgen -v PGEXT_DEP_ | sort); do echo "$v=${!v}"; done; declare -f duckdb_build_curl pgext_hook_pre_build duckdb_openssl_root; } | shasum -a 256 | cut -c1-16)"
   echo "$PGEXT_CACHE/deps/duckdb-$key-$1"
 }
 

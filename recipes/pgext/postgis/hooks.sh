@@ -19,7 +19,7 @@
 
 postgis_deps_prefix() {
   local key
-  key="$( { echo "$1"; echo "${MACOSX_DEPLOYMENT_TARGET:-}"; env | grep '^PGEXT_DEP_' | sort; declare -f postgis_build_deps postgis_cmake; } | shasum -a 256 | cut -c1-16)"
+  key="$( { echo "$1"; echo "${MACOSX_DEPLOYMENT_TARGET:-}"; for v in $(compgen -v PGEXT_DEP_ | sort); do echo "$v=${!v}"; done; declare -f postgis_build_deps postgis_cmake; } | shasum -a 256 | cut -c1-16)"
   echo "$PGEXT_CACHE/deps/postgis-$key-$1"
 }
 
