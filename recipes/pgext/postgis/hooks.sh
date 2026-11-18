@@ -138,7 +138,14 @@ pgext_hook_build() {
   # bindir: the loaders install there (the tree's bin, which collect maps to
   # bin/ and post_collect drops); configure's default is /usr/local/bin.
   # mandir: under docdir, which collect drops.
+  # Linux: configure links wagyu/flatgeobuf against libc++ whenever one is
+  # installed (the CI runners have LLVM's), which would then be vendored and
+  # loaded beside the libstdc++ GEOS/GDAL use. The C++ runtime is the
+  # system's libstdc++, like every other C++ library here.
+  local nocxx=()
+  [ "$(uname -s)" = Darwin ] || nocxx=(ac_cv_lib_cpp_main=no)
   ./configure --with-pgconfig="$pgc" --bindir="$("$pgc" --bindir)" \
+    ${nocxx[@]+"${nocxx[@]}"} \
     --mandir="$("$pgc" --docdir)/man" \
     --with-geosconfig="$p/bin/geos-config" --with-projdir="$p" \
     --with-gdalconfig="$p/bin/gdal-config" --with-jsondir="$p" \

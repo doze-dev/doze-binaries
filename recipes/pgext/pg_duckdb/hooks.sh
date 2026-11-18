@@ -75,6 +75,9 @@ pgext_hook_deps() {
     [ -n "$lz4" ] || pgext_die "the Postgres tree ships no liblz4"
     mkdir -p "$PGEXT_WORK/lz4" && ln -sf "$lz4" "$PGEXT_WORK/lz4/liblz4.dylib"
     PGEXT_MAKE_ARGS+=("PG_LDFLAGS=-L$PGEXT_WORK/lz4")
+    # The Makefile names libduckdb with the tree's DLSUFFIX, which is .so
+    # before PG16 on macOS; CMake always builds libduckdb.dylib.
+    PGEXT_MAKE_ARGS+=("FULL_DUCKDB_LIB=third_party/duckdb/build/release/src/libduckdb.dylib")
   fi
 }
 
@@ -108,7 +111,7 @@ pgext_hook_pre_build() {
     command -v ninja >/dev/null && gen=ninja
     # pg_duckdb's own Makefile target, with CMake told where the pinned curl
     # and the tree's OpenSSL are.
-    make -C "$src" duckdb PG_CONFIG="$PGEXT_PG_CONFIG" DUCKDB_GEN="$gen" \
+    make -C "$src" duckdb PG_CONFIG="$PGEXT_PG_CONFIG" DUCKDB_GEN="$gen" ${PGEXT_MAKE_ARGS[@]+"${PGEXT_MAKE_ARGS[@]}"} \
       DUCKDB_CMAKE_VARS="-DCXX_EXTRA=-fvisibility=default -DBUILD_SHELL=0 -DBUILD_PYTHON=0 -DBUILD_UNITTESTS=0${curlvars}${ssl:+ -DOPENSSL_ROOT_DIR=$ssl}${MACOSX_DEPLOYMENT_TARGET:+ -DCMAKE_OSX_DEPLOYMENT_TARGET=$MACOSX_DEPLOYMENT_TARGET}" >&2 \
       || pgext_die "building DuckDB"
     cp "$src/third_party/duckdb/build/release/src/$lib" "$DUCKDB_CACHE/"
